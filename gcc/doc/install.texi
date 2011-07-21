@@ -368,11 +368,11 @@ It can be downloaded from @uref{http://www.cs.unipr.it/ppl/Download/}.
 The @option{--with-ppl} configure option should be used if PPL is not
 installed in your default library search path.
 
-@item CLooG 0.16.1
+@item CLooG 0.17.0
 
 Necessary to build GCC with the Graphite loop optimizations.  It can be
 downloaded from @uref{ftp://gcc.gnu.org/pub/gcc/infrastructure/} as
-@file{cloog-0.16.1.tar.gz}.  The @option{--with-cloog} configure option should
+@file{cloog-0.17.0.tar.gz}.  The @option{--with-cloog} configure option should
 be used if CLooG is not installed in your default library search path.
 
 @end table
