@@ -38,7 +38,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "graphite-poly.h"
 #include "graphite-clast-to-gimple.h"
 #include "graphite-dependences.h"
-#include "graphite-cloog-compat.h"
+
+typedef const struct clast_expr *clast_name_p;
 
 #ifndef CLOOG_LANGUAGE_C
 #define CLOOG_LANGUAGE_C LANGUAGE_C
@@ -112,12 +113,8 @@ clast_name_to_level (clast_name_p name, htab_t index_table)
   struct clast_name_index tmp;
   PTR *slot;
 
-#ifdef CLOOG_ORG
   gcc_assert (name->type == clast_expr_name);
   tmp.name = ((const struct clast_name *) name)->name;
-#else
-  tmp.name = name;
-#endif
 
   slot = htab_find_slot (index_table, &tmp, NO_INSERT);
 
@@ -137,12 +134,8 @@ clast_name_to_index (clast_name_p name, htab_t index_table)
   struct clast_name_index tmp;
   PTR *slot;
 
-#ifdef CLOOG_ORG
   gcc_assert (name->type == clast_expr_name);
   tmp.name = ((const struct clast_name *) name)->name;
-#else
-  tmp.name = name;
-#endif
 
   slot = htab_find_slot (index_table, &tmp, NO_INSERT);
 
@@ -163,12 +156,8 @@ clast_name_to_lb_ub (clast_name_p name, htab_t index_table, mpz_t bound_one,
   struct clast_name_index tmp;
   PTR *slot;
 
-#ifdef CLOOG_ORG
   gcc_assert (name->type == clast_expr_name);
   tmp.name = ((const struct clast_name *) name)->name;
-#else
-  tmp.name = name;
-#endif
 
   slot = htab_find_slot (index_table, &tmp, NO_INSERT);
 
@@ -870,7 +859,7 @@ graphite_create_new_loop (edge entry_edge, struct clast_for *stmt,
 
   struct clast_user_stmt *body
     = clast_get_body_of_loop ((struct clast_stmt *) stmt);
-  poly_bb_p pbb = (poly_bb_p) cloog_statement_usr (body->statement);
+  poly_bb_p pbb = (poly_bb_p) body->statement->usr;
 
   tree stride = gmp_cst_to_tree (type, stmt->stride);
   tree ivvar = create_tmp_var (type, "graphite_IV");
@@ -911,7 +900,7 @@ build_iv_mapping (VEC (tree, heap) *iv_map, struct clast_user_stmt *user_stmt,
   struct clast_stmt *t;
   int depth = 0;
   CloogStatement *cs = user_stmt->statement;
-  poly_bb_p pbb = (poly_bb_p) cloog_statement_usr (cs);
+  poly_bb_p pbb = (poly_bb_p) cs->usr;
   gimple_bb_p gbb = PBB_BLACK_BOX (pbb);
   mpz_t bound_one, bound_two;
 
@@ -1028,7 +1017,7 @@ translate_clast_user (struct clast_user_stmt *stmt, edge next_e,
 {
   int i, nb_loops;
   basic_block new_bb;
-  poly_bb_p pbb = (poly_bb_p) cloog_statement_usr (stmt->statement);
+  poly_bb_p pbb = (poly_bb_p) stmt->statement->usr;
   gimple_bb_p gbb = PBB_BLACK_BOX (pbb);
   VEC (tree, heap) *iv_map;
 
@@ -1257,8 +1246,8 @@ free_scattering (CloogScatteringList *scattering)
 {
   while (scattering)
     {
-      CloogScattering *dom = cloog_scattering (scattering);
-      CloogScatteringList *next = cloog_next_scattering (scattering);
+      CloogScattering *dom = scattering->scatt;
+      CloogScatteringList *next = scattering->next;
 
       cloog_scattering_free (dom);
       free (scattering);
@@ -1276,13 +1265,13 @@ initialize_cloog_names (scop_p scop, CloogProgram *prog)
   sese region = SCOP_REGION (scop);
   int i;
   int nb_iterators = scop_max_loop_depth (scop);
-  int nb_scattering = cloog_program_nb_scattdims (prog);
+  int nb_scattering = prog->nb_scattdims;
   int nb_parameters = VEC_length (tree, SESE_PARAMS (region));
   char **iterators = XNEWVEC (char *, nb_iterators * 2);
   char **scattering = XNEWVEC (char *, nb_scattering);
   char **parameters= XNEWVEC (char *, nb_parameters);
 
-  cloog_program_set_names (prog, cloog_names_malloc ());
+  prog->names = cloog_names_malloc ();
 
   for (i = 0; i < nb_parameters; i++)
     {
@@ -1299,8 +1288,8 @@ initialize_cloog_names (scop_p scop, CloogProgram *prog)
       snprintf (parameters[i], len, "%s_%d", name, SSA_NAME_VERSION (param));
     }
 
-  cloog_names_set_nb_parameters (cloog_program_names (prog), nb_parameters);
-  cloog_names_set_parameters (cloog_program_names (prog), parameters);
+  prog->names->nb_parameters = nb_parameters;
+  prog->names->parameters = parameters;
 
   for (i = 0; i < nb_iterators; i++)
     {
@@ -1309,10 +1298,8 @@ initialize_cloog_names (scop_p scop, CloogProgram *prog)
       snprintf (iterators[i], len, "git_%d", i);
     }
 
-  cloog_names_set_nb_iterators (cloog_program_names (prog),
-				nb_iterators);
-  cloog_names_set_iterators (cloog_program_names (prog),
-			     iterators);
+  prog->names->nb_iterators = nb_iterators;
+  prog->names->iterators = iterators;
 
   for (i = 0; i < nb_scattering; i++)
     {
@@ -1321,10 +1308,8 @@ initialize_cloog_names (scop_p scop, CloogProgram *prog)
       snprintf (scattering[i], len, "scat_%d", i);
     }
 
-  cloog_names_set_nb_scattering (cloog_program_names (prog),
-				 nb_scattering);
-  cloog_names_set_scattering (cloog_program_names (prog),
-			      scattering);
+  prog->names->nb_scattering = nb_scattering;
+  prog->names->scattering = scattering;
 }
 
 /* Initialize a CLooG input file.  */
@@ -1367,12 +1352,13 @@ build_cloog_prog (scop_p scop, CloogProgram *prog,
   int nbs = 2 * max_nb_loops + 1;
   int *scaldims;
 
-  cloog_program_set_context
-    (prog, new_Cloog_Domain_from_ppl_Pointset_Powerset (SCOP_CONTEXT (scop),
-      scop_nb_params (scop), cloog_state));
+  prog->context =
+    new_Cloog_Domain_from_ppl_Pointset_Powerset (SCOP_CONTEXT (scop),
+						 scop_nb_params (scop),
+						 cloog_state);
   nbs = unify_scattering_dimensions (scop);
   scaldims = (int *) xmalloc (nbs * (sizeof (int)));
-  cloog_program_set_nb_scattdims (prog, nbs);
+  prog->nb_scattdims = nbs;
   initialize_cloog_names (scop, prog);
 
   FOR_EACH_VEC_ELT (poly_bb_p, SCOP_BBS (scop), i, pbb)
@@ -1392,14 +1378,14 @@ build_cloog_prog (scop_p scop, CloogProgram *prog,
                                                          scop_nb_params (scop),
                                                          cloog_state);
       block = cloog_block_alloc (stmt, 0, NULL, pbb_dim_iter_domain (pbb));
-      cloog_statement_set_usr (stmt, pbb);
+      stmt->usr = pbb;
 
       /* Build loop list.  */
       {
         CloogLoop *new_loop_list = cloog_loop_malloc (cloog_state);
-        cloog_loop_set_next (new_loop_list, loop_list);
-        cloog_loop_set_domain (new_loop_list, dom);
-        cloog_loop_set_block (new_loop_list, block);
+        new_loop_list->next = loop_list;
+        new_loop_list->domain = dom;
+        new_loop_list->block = block;
         loop_list = new_loop_list;
       }
 
@@ -1407,8 +1393,8 @@ build_cloog_prog (scop_p scop, CloogProgram *prog,
       {
         CloogBlockList *new_block_list = cloog_block_list_malloc ();
 
-        cloog_block_list_set_next (new_block_list, block_list);
-        cloog_block_list_set_block (new_block_list, block);
+        new_block_list->next = block_list;
+        new_block_list->block = block;
         block_list = new_block_list;
       }
 
@@ -1425,19 +1411,19 @@ build_cloog_prog (scop_p scop, CloogProgram *prog,
           (scat, scop_nb_params (scop), pbb_nb_scattering_transform (pbb),
            cloog_state);
 
-        cloog_set_next_scattering (new_scattering, scattering);
-        cloog_set_scattering (new_scattering, dom);
+        new_scattering->next = scattering;
+        new_scattering->scatt = dom;
         scattering = new_scattering;
       }
     }
 
-  cloog_program_set_loop (prog, loop_list);
-  cloog_program_set_blocklist (prog, block_list);
+  prog->loop = loop_list;
+  prog->blocklist = block_list;
 
   for (i = 0; i < nbs; i++)
     scaldims[i] = 0 ;
 
-  cloog_program_set_scaldims (prog, scaldims);
+  prog->scaldims = scaldims;
 
   /* Extract scalar dimensions to simplify the code generation problem.  */
   cloog_program_extract_scalars (prog, scattering, options);
@@ -1458,22 +1444,21 @@ build_cloog_prog (scop_p scop, CloogProgram *prog,
   free_scattering (scattering);
 
   /* Iterators corresponding to scalar dimensions have to be extracted.  */
-  cloog_names_scalarize (cloog_program_names (prog), nbs,
-			 cloog_program_scaldims (prog));
+  cloog_names_scalarize (prog->names, nbs, prog->scaldims);
 
   /* Free blocklist.  */
   {
-    CloogBlockList *next = cloog_program_blocklist (prog);
+    CloogBlockList *next = prog->blocklist;
 
     while (next)
       {
         CloogBlockList *toDelete = next;
-        next = cloog_block_list_next (next);
-        cloog_block_list_set_next (toDelete, NULL);
-        cloog_block_list_set_block (toDelete, NULL);
+        next = next->next;
+        toDelete->next =  NULL;
+        toDelete->block = NULL;
         cloog_block_list_free (toDelete);
       }
-    cloog_program_set_blocklist (prog, NULL);
+    prog->blocklist = NULL;
   }
 }
 
@@ -1495,14 +1480,8 @@ set_cloog_options (void)
      GLooG.  */
   options->esp = 1;
 
-#ifdef CLOOG_ORG
   /* Silence CLooG to avoid failing tests due to debug output to stderr.  */
   options->quiet = 1;
-#else
-  /* Enable C pretty-printing mode: normalizes the substitution
-     equations for statements.  */
-  options->cpp = 1;
-#endif
 
   /* Allow cloog to build strides with a stride width different to one.
      This example has stride = 4:
@@ -1600,9 +1579,9 @@ debug_generated_program (scop_p scop)
 
 static void
 create_params_index (scop_p scop, htab_t index_table, CloogProgram *prog) {
-  CloogNames* names = cloog_program_names (prog);
-  int nb_parameters = cloog_names_nb_parameters (names);
-  char **parameters = cloog_names_parameters (names);
+  CloogNames* names = prog->names;
+  int nb_parameters = names->nb_parameters;
+  char **parameters = names->parameters;
   int i;
   mpz_t bound_one, bound_two;
 

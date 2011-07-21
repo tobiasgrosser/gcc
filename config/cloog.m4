@@ -109,7 +109,7 @@ AC_DEFUN([CLOOG_FIND_FLAGS],
   _cloog_saved_LDFLAGS=$LDFLAGS
   _cloog_saved_LIBS=$LIBS
 
-  _cloogorginc="-DCLOOG_INT_GMP -DCLOOG_ORG"
+  _cloogorginc="-DCLOOG_INT_GMP"
  
   dnl clooglibs & clooginc may have been initialized by CLOOG_INIT_FLAGS.
   CFLAGS="${CFLAGS} ${clooginc} ${gmpinc}"

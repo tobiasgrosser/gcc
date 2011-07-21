@@ -5805,7 +5805,7 @@ if test "x$with_cloog" != "xno"; then
   _cloog_saved_LDFLAGS=$LDFLAGS
   _cloog_saved_LIBS=$LIBS
 
-  _cloogorginc="-DCLOOG_INT_GMP -DCLOOG_ORG"
+  _cloogorginc="-DCLOOG_INT_GMP"
 
     CFLAGS="${CFLAGS} ${clooginc} ${gmpinc}"
   CPPFLAGS="${CPPFLAGS} ${_cloogorginc}"
