@@ -236,7 +236,7 @@ new_C_Polyhedron_from_Cloog_Matrix (ppl_Polyhedron_t *ph,
 
 CloogDomain *
 new_Cloog_Domain_from_ppl_Polyhedron (ppl_const_Polyhedron_t ph, int nb_params,
-                                      CloogState *state ATTRIBUTE_UNUSED)
+                                      CloogState *state)
 {
   CloogMatrix *mat = new_Cloog_Matrix_from_ppl_Polyhedron (ph);
   CloogDomain *res = cloog_domain_from_cloog_matrix (state, mat, nb_params);
@@ -248,9 +248,9 @@ new_Cloog_Domain_from_ppl_Polyhedron (ppl_const_Polyhedron_t ph, int nb_params,
 
 CloogScattering *
 new_Cloog_Scattering_from_ppl_Polyhedron (ppl_const_Polyhedron_t ph,
-                                          int nb_params ATTRIBUTE_UNUSED,
-                                          int nb_scatt ATTRIBUTE_UNUSED,
-                                          CloogState *state ATTRIBUTE_UNUSED)
+                                          int nb_params,
+                                          int nb_scatt,
+                                          CloogState *state)
 {
   CloogMatrix *mat = new_Cloog_Matrix_from_ppl_Polyhedron (ph);
   CloogScattering *res = cloog_scattering_from_cloog_matrix (state, mat,
@@ -266,7 +266,7 @@ new_Cloog_Scattering_from_ppl_Polyhedron (ppl_const_Polyhedron_t ph,
 CloogDomain *
 new_Cloog_Domain_from_ppl_Pointset_Powerset
   (ppl_Pointset_Powerset_C_Polyhedron_t ps, int nb_params,
-   CloogState *state ATTRIBUTE_UNUSED)
+   CloogState *state)
 {
   CloogDomain *res = NULL;
   ppl_Pointset_Powerset_C_Polyhedron_iterator_t it, end;
