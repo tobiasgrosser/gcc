@@ -70,6 +70,9 @@ typedef struct clast_name_index {
   int level;
   mpz_t bound_one, bound_two;
   const char *name;
+  /* If free_name is set, the content of name was allocated by us and needs
+     to be freed.  */
+  char *free_name;
 } *clast_name_index_p;
 
 /* Returns a pointer to a new element of type clast_name_index_p built
@@ -80,8 +83,11 @@ new_clast_name_index (const char *name, int index, int level,
 		      mpz_t bound_one, mpz_t bound_two)
 {
   clast_name_index_p res = XNEW (struct clast_name_index);
+  char *new_name = XNEWVEC (char, strlen (name) + 1);
+  strcpy (new_name, name);
 
-  res->name = name;
+  res->name = new_name;
+  res->free_name = new_name;
   res->level = level;
   res->index = index;
   mpz_init (res->bound_one);
@@ -97,6 +103,8 @@ static void
 free_clast_name_index (void *ptr)
 {
   struct clast_name_index *c = (struct clast_name_index *) ptr;
+  if (c->free_name)
+    free (c->free_name);
   mpz_clear (c->bound_one);
   mpz_clear (c->bound_two);
   free (ptr);
@@ -115,6 +123,7 @@ clast_name_to_level (clast_name_p name, htab_t index_table)
 
   gcc_assert (name->type == clast_expr_name);
   tmp.name = ((const struct clast_name *) name)->name;
+  tmp.free_name = NULL;
 
   slot = htab_find_slot (index_table, &tmp, NO_INSERT);
 
@@ -136,6 +145,7 @@ clast_name_to_index (clast_name_p name, htab_t index_table)
 
   gcc_assert (name->type == clast_expr_name);
   tmp.name = ((const struct clast_name *) name)->name;
+  tmp.free_name = NULL;
 
   slot = htab_find_slot (index_table, &tmp, NO_INSERT);
 
@@ -158,6 +168,7 @@ clast_name_to_lb_ub (clast_name_p name, htab_t index_table, mpz_t bound_one,
 
   gcc_assert (name->type == clast_expr_name);
   tmp.name = ((const struct clast_name *) name)->name;
+  tmp.free_name = NULL;
 
   slot = htab_find_slot (index_table, &tmp, NO_INSERT);
 
@@ -181,6 +192,7 @@ save_clast_name_index (htab_t index_table, const char *name,
   PTR *slot;
 
   tmp.name = name;
+  tmp.free_name = NULL;
   slot = htab_find_slot (index_table, &tmp, INSERT);
 
   if (slot)
@@ -196,7 +208,16 @@ save_clast_name_index (htab_t index_table, const char *name,
 static inline hashval_t
 clast_name_index_elt_info (const void *elt)
 {
-  return htab_hash_pointer (((const struct clast_name_index *) elt)->name);
+  const struct clast_name_index *e = ((const struct clast_name_index *) elt);
+  hashval_t hash = 0;
+
+  int length = strlen (e->name);
+  int i;
+
+  for (i = 0; i < length; ++i)
+    hash = hash | (e->name[i] << (i % 4));
+
+  return hash;
 }
 
 /* Compares database elements E1 and E2.  */
@@ -207,7 +228,7 @@ eq_clast_name_indexes (const void *e1, const void *e2)
   const struct clast_name_index *elt1 = (const struct clast_name_index *) e1;
   const struct clast_name_index *elt2 = (const struct clast_name_index *) e2;
 
-  return (elt1->name == elt2->name);
+  return strcmp (elt1->name, elt2->name) == 0;
 }
 
 
@@ -1239,77 +1260,69 @@ translate_clast (loop_p context_loop, struct clast_stmt *stmt, edge next_e,
 			  level, ip);
 }
 
-/* Free the SCATTERING domain list.  */
+/* Add parameter and iterator names to the CloogUnionDomain.  */
 
-static void
-free_scattering (CloogScatteringList *scattering)
-{
-  while (scattering)
-    {
-      CloogScattering *dom = scattering->scatt;
-      CloogScatteringList *next = scattering->next;
-
-      cloog_scattering_free (dom);
-      free (scattering);
-      scattering = next;
-    }
-}
-
-/* Initialize Cloog's parameter names from the names used in GIMPLE.
-   Initialize Cloog's iterator names, using 'graphite_iterator_%d'
-   from 0 to scop_nb_loops (scop).  */
-
-static void
-initialize_cloog_names (scop_p scop, CloogProgram *prog)
+static CloogUnionDomain *
+add_names_to_union_domain (scop_p scop, CloogUnionDomain *union_domain,
+			   int nb_scattering_dims, htab_t params_index)
 {
   sese region = SCOP_REGION (scop);
   int i;
   int nb_iterators = scop_max_loop_depth (scop);
-  int nb_scattering = prog->nb_scattdims;
   int nb_parameters = VEC_length (tree, SESE_PARAMS (region));
-  char **iterators = XNEWVEC (char *, nb_iterators * 2);
-  char **scattering = XNEWVEC (char *, nb_scattering);
-  char **parameters= XNEWVEC (char *, nb_parameters);
+  mpz_t bound_one, bound_two;
 
-  prog->names = cloog_names_malloc ();
+  mpz_init (bound_one);
+  mpz_init (bound_two);
 
   for (i = 0; i < nb_parameters; i++)
     {
       tree param = VEC_index (tree, SESE_PARAMS (region), i);
       const char *name = get_name (param);
       int len;
+      char *parameter;
 
       if (!name)
 	name = "T";
 
       len = strlen (name);
       len += 17;
-      parameters[i] = XNEWVEC (char, len + 1);
-      snprintf (parameters[i], len, "%s_%d", name, SSA_NAME_VERSION (param));
+      parameter = XNEWVEC (char, len + 1);
+      snprintf (parameter, len, "%s_%d", name, SSA_NAME_VERSION (param));
+      save_clast_name_index (params_index, parameter, i, i, bound_one,
+			     bound_two);
+      union_domain = cloog_union_domain_set_name (union_domain, CLOOG_PARAM, i,
+						  parameter);
+      compute_bounds_for_param (scop, i, bound_one, bound_two);
+      free (parameter);
     }
 
-  prog->names->nb_parameters = nb_parameters;
-  prog->names->parameters = parameters;
+  mpz_clear (bound_one);
+  mpz_clear (bound_two);
 
   for (i = 0; i < nb_iterators; i++)
     {
       int len = 4 + 16;
-      iterators[i] = XNEWVEC (char, len);
-      snprintf (iterators[i], len, "git_%d", i);
+      char *iterator;
+      iterator = XNEWVEC (char, len);
+      snprintf (iterator, len, "git_%d", i);
+      union_domain = cloog_union_domain_set_name (union_domain, CLOOG_ITER, i,
+						  iterator);
+      free (iterator);
     }
 
-  prog->names->nb_iterators = nb_iterators;
-  prog->names->iterators = iterators;
-
-  for (i = 0; i < nb_scattering; i++)
+  for (i = 0; i < nb_scattering_dims; i++)
     {
       int len = 5 + 16;
-      scattering[i] = XNEWVEC (char, len);
-      snprintf (scattering[i], len, "scat_%d", i);
+      char *scattering;
+      scattering = XNEWVEC (char, len);
+      snprintf (scattering, len, "scat_%d", i);
+      union_domain = cloog_union_domain_set_name (union_domain, CLOOG_SCAT, i,
+						  scattering);
+      free (scattering);
     }
 
-  prog->names->nb_scattering = nb_scattering;
-  prog->names->scattering = scattering;
+  return union_domain;
 }
 
 /* Initialize a CLooG input file.  */
@@ -1337,129 +1350,40 @@ init_cloog_input_file (int scop_number)
   return graphite_out_file;
 }
 
-/* Build cloog program for SCoP.  */
+/* Build cloog union domain for SCoP.  */
 
-static void
-build_cloog_prog (scop_p scop, CloogProgram *prog,
-                  CloogOptions *options)
+static CloogUnionDomain *
+build_cloog_union_domain (scop_p scop)
 {
   int i;
-  int max_nb_loops = scop_max_loop_depth (scop);
   poly_bb_p pbb;
-  CloogLoop *loop_list = NULL;
-  CloogBlockList *block_list = NULL;
-  CloogScatteringList *scattering = NULL;
-  int nbs = 2 * max_nb_loops + 1;
-  int *scaldims;
 
-  prog->context =
-    new_Cloog_Domain_from_ppl_Pointset_Powerset (SCOP_CONTEXT (scop),
-						 scop_nb_params (scop),
-						 cloog_state);
-  nbs = unify_scattering_dimensions (scop);
-  scaldims = (int *) xmalloc (nbs * (sizeof (int)));
-  prog->nb_scattdims = nbs;
-  initialize_cloog_names (scop, prog);
+  CloogUnionDomain *union_domain =
+    cloog_union_domain_alloc (scop_nb_params (scop));
 
   FOR_EACH_VEC_ELT (poly_bb_p, SCOP_BBS (scop), i, pbb)
     {
-      CloogStatement *stmt;
-      CloogBlock *block;
-      CloogDomain *dom;
+      CloogDomain *domain;
+      CloogScattering *scattering;
 
       /* Dead code elimination: when the domain of a PBB is empty,
 	 don't generate code for the PBB.  */
       if (ppl_Pointset_Powerset_C_Polyhedron_is_empty (PBB_DOMAIN (pbb)))
 	continue;
 
-      /* Build the new statement and its block.  */
-      stmt = cloog_statement_alloc (cloog_state, pbb_index (pbb));
-      dom = new_Cloog_Domain_from_ppl_Pointset_Powerset (PBB_DOMAIN (pbb),
-                                                         scop_nb_params (scop),
-                                                         cloog_state);
-      block = cloog_block_alloc (stmt, 0, NULL, pbb_dim_iter_domain (pbb));
-      stmt->usr = pbb;
+      domain = new_Cloog_Domain_from_ppl_Pointset_Powerset (PBB_DOMAIN (pbb),
+							    scop_nb_params (scop),
+							    cloog_state);
 
-      /* Build loop list.  */
-      {
-        CloogLoop *new_loop_list = cloog_loop_malloc (cloog_state);
-        new_loop_list->next = loop_list;
-        new_loop_list->domain = dom;
-        new_loop_list->block = block;
-        loop_list = new_loop_list;
-      }
+      scattering = new_Cloog_Scattering_from_ppl_Polyhedron
+	(PBB_TRANSFORMED_SCATTERING (pbb), scop_nb_params (scop),
+	 pbb_nb_scattering_transform (pbb), cloog_state);
 
-      /* Build block list.  */
-      {
-        CloogBlockList *new_block_list = cloog_block_list_malloc ();
-
-        new_block_list->next = block_list;
-        new_block_list->block = block;
-        block_list = new_block_list;
-      }
-
-      /* Build scattering list.  */
-      {
-        /* XXX: Replace with cloog_domain_list_alloc(), when available.  */
-        CloogScatteringList *new_scattering
-	  = (CloogScatteringList *) xmalloc (sizeof (CloogScatteringList));
-        ppl_Polyhedron_t scat;
-	CloogScattering *dom;
-
-	scat = PBB_TRANSFORMED_SCATTERING (pbb);
-        dom = new_Cloog_Scattering_from_ppl_Polyhedron
-          (scat, scop_nb_params (scop), pbb_nb_scattering_transform (pbb),
-           cloog_state);
-
-        new_scattering->next = scattering;
-        new_scattering->scatt = dom;
-        scattering = new_scattering;
-      }
+      union_domain = cloog_union_domain_add_domain (union_domain, "", domain,
+						    scattering, pbb);
     }
 
-  prog->loop = loop_list;
-  prog->blocklist = block_list;
-
-  for (i = 0; i < nbs; i++)
-    scaldims[i] = 0 ;
-
-  prog->scaldims = scaldims;
-
-  /* Extract scalar dimensions to simplify the code generation problem.  */
-  cloog_program_extract_scalars (prog, scattering, options);
-
-  /* Dump a .cloog input file, if requested.  This feature is only
-     enabled in the Graphite branch.  */
-  if (0)
-    {
-      static size_t file_scop_number = 0;
-      FILE *cloog_file = init_cloog_input_file (file_scop_number);
-
-      cloog_program_dump_cloog (cloog_file, prog, scattering);
-      ++file_scop_number;
-    }
-
-  /* Apply scattering.  */
-  cloog_program_scatter (prog, scattering, options);
-  free_scattering (scattering);
-
-  /* Iterators corresponding to scalar dimensions have to be extracted.  */
-  cloog_names_scalarize (prog->names, nbs, prog->scaldims);
-
-  /* Free blocklist.  */
-  {
-    CloogBlockList *next = prog->blocklist;
-
-    while (next)
-      {
-        CloogBlockList *toDelete = next;
-        next = next->next;
-        toDelete->next =  NULL;
-        toDelete->block = NULL;
-        cloog_block_list_free (toDelete);
-      }
-    prog->blocklist = NULL;
-  }
+  return union_domain;
 }
 
 /* Return the options that will be used in GLOOG.  */
@@ -1524,24 +1448,52 @@ debug_clast_stmt (struct clast_stmt *stmt)
   print_clast_stmt (stderr, stmt);
 }
 
+static CloogInput *
+generate_cloog_input (scop_p scop, htab_t params_index)
+{
+  CloogUnionDomain *union_domain;
+  CloogInput *cloog_input;
+  CloogDomain *context;
+
+  int nb_scattering_dims = unify_scattering_dimensions (scop);
+  union_domain = build_cloog_union_domain (scop);
+  union_domain = add_names_to_union_domain (scop, union_domain,
+					    nb_scattering_dims,
+					    params_index);
+  context = new_Cloog_Domain_from_ppl_Pointset_Powerset
+    (SCOP_CONTEXT (scop), scop_nb_params (scop), cloog_state);
+
+  cloog_input = cloog_input_alloc (context, union_domain);
+
+  return cloog_input;
+}
+
 /* Translate SCOP to a CLooG program and clast.  These two
    representations should be freed together: a clast cannot be used
    without a program.  */
 
-cloog_prog_clast
-scop_to_clast (scop_p scop)
+static struct clast_stmt *
+scop_to_clast (scop_p scop, htab_t params_index)
 {
+  CloogInput *cloog_input;
+  struct clast_stmt *clast;
   CloogOptions *options = set_cloog_options ();
-  cloog_prog_clast pc;
 
-  /* Connect new cloog prog generation to graphite.  */
-  pc.prog = cloog_program_malloc ();
-  build_cloog_prog (scop, pc.prog, options);
-  pc.prog = cloog_program_generate (pc.prog, options);
-  pc.stmt = cloog_clast_create (pc.prog, options);
+  cloog_input = generate_cloog_input (scop, params_index);
+
+  /* Dump a .cloog input file, if requested.  This feature is only
+     enabled in the Graphite branch.  */
+  if (0)
+  {
+    static size_t file_scop_number = 0;
+    FILE *cloog_file = init_cloog_input_file (file_scop_number);
+    cloog_input_dump_cloog (cloog_file, cloog_input, options);
+  }
+
+  clast = cloog_clast_create_from_input (cloog_input, options);
 
   cloog_options_free (options);
-  return pc;
+  return clast;
 }
 
 /* Prints to FILE the code generated by CLooG for SCOP.  */
@@ -1550,20 +1502,20 @@ void
 print_generated_program (FILE *file, scop_p scop)
 {
   CloogOptions *options = set_cloog_options ();
+  htab_t params_index;
+  struct clast_stmt *clast;
 
-  cloog_prog_clast pc = scop_to_clast (scop);
+  params_index = htab_create (10, clast_name_index_elt_info,
+            eq_clast_name_indexes, free_clast_name_index);
 
-  fprintf (file, "       (prog: \n");
-  cloog_program_print (file, pc.prog);
-  fprintf (file, "       )\n");
+  clast = scop_to_clast (scop, params_index);
 
   fprintf (file, "       (clast: \n");
-  clast_pprint (file, pc.stmt, 0, options);
+  clast_pprint (file, clast, 0, options);
   fprintf (file, "       )\n");
 
   cloog_options_free (options);
-  cloog_clast_free (pc.stmt);
-  cloog_program_free (pc.prog);
+  cloog_clast_free (clast);
 }
 
 /* Prints to STDERR the code generated by CLooG for SCOP.  */
@@ -1572,31 +1524,6 @@ DEBUG_FUNCTION void
 debug_generated_program (scop_p scop)
 {
   print_generated_program (stderr, scop);
-}
-
-/* Add CLooG names to parameter index.  The index is used to translate
-   back from CLooG names to GCC trees.  */
-
-static void
-create_params_index (scop_p scop, htab_t index_table, CloogProgram *prog) {
-  CloogNames* names = prog->names;
-  int nb_parameters = names->nb_parameters;
-  char **parameters = names->parameters;
-  int i;
-  mpz_t bound_one, bound_two;
-
-  mpz_init (bound_one);
-  mpz_init (bound_two);
-
-  for (i = 0; i < nb_parameters; i++)
-    {
-      compute_bounds_for_param (scop, i, bound_one, bound_two);
-      save_clast_name_index (index_table, parameters[i], i, i,
-			     bound_one, bound_two);
-    }
-
-  mpz_clear (bound_one);
-  mpz_clear (bound_two);
 }
 
 /* GIMPLE Loop Generator: generates loops from STMT in GIMPLE form for
@@ -1612,18 +1539,21 @@ gloog (scop_p scop, htab_t bb_pbb_mapping)
   sese region = SCOP_REGION (scop);
   ifsese if_region = NULL;
   htab_t newivs_index, params_index;
-  cloog_prog_clast pc;
+  struct clast_stmt *clast;
   struct ivs_params ip;
 
   timevar_push (TV_GRAPHITE_CODE_GEN);
   gloog_error = false;
 
-  pc = scop_to_clast (scop);
+  params_index = htab_create (10, clast_name_index_elt_info,
+			      eq_clast_name_indexes, free_clast_name_index);
+
+  clast = scop_to_clast (scop, params_index);
 
   if (dump_file && (dump_flags & TDF_DETAILS))
     {
       fprintf (dump_file, "\nCLAST generated by CLooG: \n");
-      print_clast_stmt (dump_file, pc.stmt);
+      print_clast_stmt (dump_file, clast);
       fprintf (dump_file, "\n");
     }
 
@@ -1641,10 +1571,6 @@ gloog (scop_p scop, htab_t bb_pbb_mapping)
   context_loop = SESE_ENTRY (region)->src->loop_father;
   newivs_index = htab_create (10, clast_name_index_elt_info,
 			      eq_clast_name_indexes, free_clast_name_index);
-  params_index = htab_create (10, clast_name_index_elt_info,
-			      eq_clast_name_indexes, free_clast_name_index);
-
-  create_params_index (scop, params_index, pc.prog);
 
   ip.newivs = &newivs;
   ip.newivs_index = newivs_index;
@@ -1652,7 +1578,7 @@ gloog (scop_p scop, htab_t bb_pbb_mapping)
   ip.params_index = params_index;
   ip.region = region;
 
-  translate_clast (context_loop, pc.stmt, if_region->true_region->entry,
+  translate_clast (context_loop, clast, if_region->true_region->entry,
 		   bb_pbb_mapping, 0, &ip);
   graphite_verify ();
   scev_reset ();
@@ -1669,8 +1595,7 @@ gloog (scop_p scop, htab_t bb_pbb_mapping)
   htab_delete (newivs_index);
   htab_delete (params_index);
   VEC_free (tree, heap, newivs);
-  cloog_clast_free (pc.stmt);
-  cloog_program_free (pc.prog);
+  cloog_clast_free (clast);
   timevar_pop (TV_GRAPHITE_CODE_GEN);
 
   if (dump_file && (dump_flags & TDF_DETAILS))
