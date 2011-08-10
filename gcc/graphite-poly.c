@@ -847,7 +847,8 @@ pbb_remove_duplicate_pdrs (poly_bb_p pbb)
 void
 new_poly_dr (poly_bb_p pbb, int dr_base_object_set,
 	     ppl_Pointset_Powerset_C_Polyhedron_t accesses,
-	     enum poly_dr_type type, void *cdr, graphite_dim_t nb_subscripts)
+	     enum poly_dr_type type, void *cdr, graphite_dim_t nb_subscripts,
+	     isl_map *acc, isl_set *extent)
 {
   static int id = 0;
   poly_dr_p pdr = XNEW (struct poly_dr);
@@ -857,6 +858,8 @@ new_poly_dr (poly_bb_p pbb, int dr_base_object_set,
   PDR_NB_REFS (pdr) = 1;
   PDR_PBB (pdr) = pbb;
   PDR_ACCESSES (pdr) = accesses;
+  pdr->accesses = acc;
+  pdr->extent = extent;
   PDR_TYPE (pdr) = type;
   PDR_CDR (pdr) = cdr;
   PDR_NB_SUBSCRIPTS (pdr) = nb_subscripts;
@@ -869,6 +872,8 @@ void
 free_poly_dr (poly_dr_p pdr)
 {
   ppl_delete_Pointset_Powerset_C_Polyhedron (PDR_ACCESSES (pdr));
+  isl_map_free (pdr->accesses);
+  isl_set_free (pdr->extent);
   XDELETE (pdr);
 }
 

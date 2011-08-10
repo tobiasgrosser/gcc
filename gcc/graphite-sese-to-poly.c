@@ -711,6 +711,17 @@ isl_id_for_ssa_name (scop_p s, tree e)
   return id;
 }
 
+/* Return an ISL identifier for the data reference DR.  */
+
+static isl_id *
+isl_id_for_dr (scop_p s, data_reference_p dr)
+{
+  // Data references all get the same isl_id.  They need to be comparable
+  // and are distinguished through the first dimension, which contains the
+  // alias set number.
+  return isl_id_alloc (s->ctx, "", 0);
+}
+
 /* Extract an affine expression from the ssa_name E.  */
 
 static isl_pw_aff *
@@ -2031,8 +2042,9 @@ build_scop_iteration_domain (scop_p scop)
    ACCESSES polyhedron, DOM_NB_DIMS is the dimension of the iteration
    domain.  */
 
-static void
-pdr_add_alias_set (ppl_Polyhedron_t accesses, data_reference_p dr,
+static isl_map *
+pdr_add_alias_set (isl_map *acc,
+		   ppl_Polyhedron_t accesses, data_reference_p dr,
 		   ppl_dimension_type accessp_nb_dims,
 		   ppl_dimension_type dom_nb_dims)
 {
@@ -2053,6 +2065,38 @@ pdr_add_alias_set (ppl_Polyhedron_t accesses, data_reference_p dr,
 
   ppl_delete_Linear_Expression (alias);
   ppl_delete_Constraint (cstr);
+
+  {
+    isl_constraint *c;
+    c = isl_equality_alloc
+      (isl_local_space_from_space (isl_map_get_space (acc)));
+    c = isl_constraint_set_constant_si (c, -alias_set_num);
+    c = isl_constraint_set_coefficient_si (c, isl_dim_out, 0, 1);
+
+    return isl_map_add_constraint (acc, c);
+  }
+}
+
+/* Assign the affine expression INDEX to the output dimension POS of
+   MAP and return the result.  */
+
+static isl_map *
+set_index (isl_map *map, int pos, isl_pw_aff *index)
+{
+  isl_map *index_map;
+  int len = isl_map_dim (map, isl_dim_out);
+  isl_id *id;
+
+  index_map = isl_map_from_pw_aff (index);
+  index_map = isl_map_insert_dims (index_map, isl_dim_out, 0, pos);
+  index_map = isl_map_add_dims (index_map, isl_dim_out, len - pos - 1);
+
+  id = isl_map_get_tuple_id (map, isl_dim_out);
+  index_map = isl_map_set_tuple_id (index_map, isl_dim_out, id);
+  id = isl_map_get_tuple_id (map, isl_dim_in);
+  index_map = isl_map_set_tuple_id (index_map, isl_dim_in, id);
+
+  return isl_map_intersect (map, index_map);
 }
 
 /* Add to ACCESSES polyhedron equalities defining the access functions
@@ -2060,8 +2104,9 @@ pdr_add_alias_set (ppl_Polyhedron_t accesses, data_reference_p dr,
    polyhedron, DOM_NB_DIMS is the dimension of the iteration domain.
    PBB is the poly_bb_p that contains the data reference DR.  */
 
-static void
-pdr_add_memory_accesses (ppl_Polyhedron_t accesses, data_reference_p dr,
+static isl_map *
+pdr_add_memory_accesses (isl_map *acc,
+			 ppl_Polyhedron_t accesses, data_reference_p dr,
 			 ppl_dimension_type accessp_nb_dims,
 			 ppl_dimension_type dom_nb_dims,
 			 poly_bb_p pbb)
@@ -2094,9 +2139,19 @@ pdr_add_memory_accesses (ppl_Polyhedron_t accesses, data_reference_p dr,
       ppl_delete_Linear_Expression (fn);
       ppl_delete_Linear_Expression (access);
       ppl_delete_Constraint (cstr);
+
+      {
+	isl_pw_aff *aff;
+
+	aff = extract_affine (scop, afn,
+                              isl_space_domain (isl_map_get_space (acc)));
+	acc = set_index (acc, i + 1, aff);
+      }
     }
 
   mpz_clear (v);
+
+  return acc;
 }
 
 /* Add constrains representing the size of the accessed data to the
@@ -2104,8 +2159,9 @@ pdr_add_memory_accesses (ppl_Polyhedron_t accesses, data_reference_p dr,
    ACCESSES polyhedron, DOM_NB_DIMS is the dimension of the iteration
    domain.  */
 
-static void
-pdr_add_data_dimensions (ppl_Polyhedron_t accesses, data_reference_p dr,
+static isl_set *
+pdr_add_data_dimensions (isl_set *extent, scop_p scop,
+			 ppl_Polyhedron_t accesses, data_reference_p dr,
 			 ppl_dimension_type accessp_nb_dims,
 			 ppl_dimension_type dom_nb_dims)
 {
@@ -2143,6 +2199,46 @@ pdr_add_data_dimensions (ppl_Polyhedron_t accesses, data_reference_p dr,
 
       high = array_ref_up_bound (ref);
 
+      if (host_integerp (low, 0)
+	  && high
+	  && host_integerp (high, 0)
+	  /* 1-element arrays at end of structures may extend over
+	     their declared size.  */
+	  && !(array_at_struct_end_p (ref)
+	       && operand_equal_p (low, high, 0)))
+	{
+	  isl_id *id;
+	  isl_aff *aff;
+	  isl_set *univ, *lbs, *ubs;
+	  isl_pw_aff *index;
+	  isl_space *space;
+	  isl_set *valid;
+	  isl_pw_aff *lb = extract_affine_int (low, isl_set_get_space (extent));
+	  isl_pw_aff *ub = extract_affine_int (high, isl_set_get_space (extent));
+
+	  /* high >= 0 */
+	  valid = isl_pw_aff_nonneg_set (isl_pw_aff_copy (ub));
+	  valid = isl_set_project_out (valid, isl_dim_set, 0,
+				       isl_set_dim (valid, isl_dim_set));
+	  scop->context = isl_set_intersect (scop->context, valid);
+
+	  space = isl_set_get_space (extent);
+	  aff = isl_aff_zero_on_domain (isl_local_space_from_space (space));
+	  aff = isl_aff_add_coefficient_si (aff, isl_dim_in, i + 1, 1);
+	  univ = isl_set_universe (isl_space_domain (isl_aff_get_space (aff)));
+	  index = isl_pw_aff_alloc (univ, aff);
+
+	  id = isl_set_get_tuple_id (extent);
+	  lb = isl_pw_aff_set_tuple_id (lb, isl_dim_in, isl_id_copy (id));
+	  ub = isl_pw_aff_set_tuple_id (ub, isl_dim_in, id);
+
+	  /* low <= sub_i <= high */
+	  lbs = isl_pw_aff_ge_set (isl_pw_aff_copy (index), lb);
+	  ubs = isl_pw_aff_le_set (index, ub);
+	  extent = isl_set_intersect (extent, lbs);
+	  extent = isl_set_intersect (extent, ubs);
+	}
+
       /* high - subscript >= 0 */
       if (high && host_integerp (high, 0)
 	  /* 1-element arrays at end of structures may extend over
@@ -2161,6 +2257,8 @@ pdr_add_data_dimensions (ppl_Polyhedron_t accesses, data_reference_p dr,
 	  ppl_delete_Constraint (cstr);
 	}
     }
+
+  return extent;
 }
 
 /* Build data accesses for DR in PBB.  */
@@ -2173,6 +2271,9 @@ build_poly_dr (data_reference_p dr, poly_bb_p pbb)
   ppl_dimension_type dom_nb_dims;
   ppl_dimension_type accessp_nb_dims;
   int dr_base_object_set;
+  isl_map *acc;
+  isl_set *extent;
+  scop_p scop = PBB_SCOP (pbb);
 
   ppl_Pointset_Powerset_C_Polyhedron_space_dimension (PBB_DOMAIN (pbb),
 						      &dom_nb_dims);
@@ -2180,9 +2281,36 @@ build_poly_dr (data_reference_p dr, poly_bb_p pbb)
 
   ppl_new_C_Polyhedron_from_space_dimension (&accesses, accessp_nb_dims, 0);
 
-  pdr_add_alias_set (accesses, dr, accessp_nb_dims, dom_nb_dims);
-  pdr_add_memory_accesses (accesses, dr, accessp_nb_dims, dom_nb_dims, pbb);
-  pdr_add_data_dimensions (accesses, dr, accessp_nb_dims, dom_nb_dims);
+  {
+    isl_space *dc = isl_set_get_space (pbb->domain);
+    int nb_out = 1 + DR_NUM_DIMENSIONS (dr);
+    isl_space *space = isl_space_add_dims (isl_space_from_domain (dc),
+					   isl_dim_out, nb_out);
+
+    acc = isl_map_universe (space);
+    acc = isl_map_set_tuple_id (acc, isl_dim_out, isl_id_for_dr (scop, dr));
+  }
+
+  acc = pdr_add_alias_set (acc, accesses, dr, accessp_nb_dims, dom_nb_dims);
+  acc = pdr_add_memory_accesses (acc, accesses, dr, accessp_nb_dims,
+				 dom_nb_dims, pbb);
+
+  {
+    isl_id *id = isl_id_for_dr (scop, dr);
+    int nb = 1 + DR_NUM_DIMENSIONS (dr);
+    isl_space *space = isl_space_set_alloc (scop->ctx, 0, nb);
+    int alias_set_num = 0;
+    base_alias_pair *bap = (base_alias_pair *)(dr->aux);
+
+    if (bap && bap->alias_set)
+      alias_set_num = *(bap->alias_set);
+
+    space = isl_space_set_tuple_id (space, isl_dim_set, id);
+    extent = isl_set_nat_universe (space);
+    extent = isl_set_fix_si (extent, isl_dim_set, 0, alias_set_num);
+    extent = pdr_add_data_dimensions (extent, scop, accesses, dr,
+				      accessp_nb_dims, dom_nb_dims);
+  }
 
   ppl_new_Pointset_Powerset_C_Polyhedron_from_C_Polyhedron (&accesses_ps,
 							    accesses);
@@ -2193,7 +2321,7 @@ build_poly_dr (data_reference_p dr, poly_bb_p pbb)
 
   new_poly_dr (pbb, dr_base_object_set, accesses_ps,
 	       DR_IS_READ (dr) ? PDR_READ : PDR_WRITE,
-	       dr, DR_NUM_DIMENSIONS (dr));
+	       dr, DR_NUM_DIMENSIONS (dr), acc, extent);
 }
 
 /* Write to FILE the alias graph of data references in DIMACS format.  */

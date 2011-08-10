@@ -182,6 +182,7 @@ struct poly_dr
      In the example, the vector "R C O I L P" is "7 7 3 2 0 1".  */
   ppl_Pointset_Powerset_C_Polyhedron_t _accesses;
   isl_map *accesses;
+  isl_set *extent;
 
   /* Data reference's base object set number, we must assure 2 pdrs are in the
      same base object set before dependency checking.  */
@@ -201,7 +202,8 @@ struct poly_dr
 #define PDR_NB_SUBSCRIPTS(PDR) (PDR->nb_subscripts)
 
 void new_poly_dr (poly_bb_p, int, ppl_Pointset_Powerset_C_Polyhedron_t,
-		  enum poly_dr_type, void *, graphite_dim_t);
+		  enum poly_dr_type, void *, graphite_dim_t, isl_map *,
+		  isl_set *);
 void free_poly_dr (poly_dr_p);
 void debug_pdr (poly_dr_p, int);
 void print_pdr (FILE *, poly_dr_p, int);
