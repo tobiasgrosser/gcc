@@ -27,6 +27,7 @@ along with GCC; see the file COPYING3.  If not see
 #include <isl/set.h>
 #include <isl/map.h>
 #include <isl/union_map.h>
+#include <isl/constraint.h>
 #include <cloog/cloog.h>
 #include <cloog/isl/domain.h>
 #endif
@@ -112,8 +113,10 @@ pbb_strip_mine_time_depth (poly_bb_p pbb, int time_depth, int stride)
 
   psct_add_scattering_dimension (pbb, strip);
   psct_add_scattering_dimension (pbb, strip + 1);
-
   ppl_Polyhedron_space_dimension (res, &dim);
+
+  pbb->transformed = isl_map_insert_dims (pbb->transformed, isl_dim_out,
+					  strip, 2);
 
   /* Lower bound of the striped loop.  */
   {
@@ -128,6 +131,16 @@ pbb_strip_mine_time_depth (poly_bb_p pbb, int time_depth, int stride)
     ppl_delete_Linear_Expression (expr);
     ppl_Polyhedron_add_constraint (res, new_cstr);
     ppl_delete_Constraint (new_cstr);
+
+    {
+      isl_space *d = isl_map_get_space (pbb->transformed);
+      isl_constraint *c;
+
+      c = isl_inequality_alloc (isl_local_space_from_space (d));
+      c = isl_constraint_set_coefficient_si (c, isl_dim_out, strip, -stride);
+      c = isl_constraint_set_coefficient_si (c, isl_dim_out, iter, 1);
+      pbb->transformed = isl_map_add_constraint (pbb->transformed, c);
+    }
   }
 
   /* Upper bound of the striped loop.  */
@@ -144,6 +157,19 @@ pbb_strip_mine_time_depth (poly_bb_p pbb, int time_depth, int stride)
     ppl_delete_Linear_Expression (expr);
     ppl_Polyhedron_add_constraint (res, new_cstr);
     ppl_delete_Constraint (new_cstr);
+
+    {
+      isl_space *d;
+      isl_constraint *c;
+
+      d = isl_map_get_space (pbb->transformed);
+      c = isl_inequality_alloc (isl_local_space_from_space (d));
+
+      c = isl_constraint_set_coefficient_si (c, isl_dim_out, strip, stride);
+      c = isl_constraint_set_coefficient_si (c, isl_dim_out, iter, -1);
+      c = isl_constraint_set_constant_si (c, stride - 1);
+      pbb->transformed = isl_map_add_constraint (pbb->transformed, c);
+    }
   }
 
   /* Static scheduling for ITER level.
@@ -160,6 +186,16 @@ pbb_strip_mine_time_depth (poly_bb_p pbb, int time_depth, int stride)
     ppl_delete_Linear_Expression (expr);
     ppl_Polyhedron_add_constraint (res, new_cstr);
     ppl_delete_Constraint (new_cstr);
+
+    {
+      isl_space *d;
+      isl_constraint *c;
+
+      d = isl_map_get_space (pbb->transformed);
+      c = isl_equality_alloc (isl_local_space_from_space (d));
+      c = isl_constraint_set_coefficient_si (c, isl_dim_out, strip + 1, 1);
+      pbb->transformed = isl_map_add_constraint (pbb->transformed, c);
+    }
   }
 }
 
