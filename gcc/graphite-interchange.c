@@ -502,6 +502,23 @@ pbb_interchange_loop_depths (graphite_dim_t depth1, graphite_dim_t depth2,
 
   ppl_Polyhedron_map_space_dimensions (poly, map, dim);
   free (map);
+
+  {
+    isl_space *d = isl_map_get_space (pbb->transformed);
+    isl_space *d1 = isl_space_range (d);
+    unsigned n = isl_space_dim (d1, isl_dim_out);
+    isl_space *d2 = isl_space_add_dims (d1, isl_dim_in, n);
+    isl_map *x = isl_map_universe (d2);
+
+    x = isl_map_equate (x, isl_dim_in, dim1, isl_dim_out, dim2);
+    x = isl_map_equate (x, isl_dim_in, dim2, isl_dim_out, dim1);
+
+    for (i = 0; i < n; i++)
+      if (i != dim1 && i != dim2)
+	x = isl_map_equate (x, isl_dim_in, i, isl_dim_out, i);
+
+    pbb->transformed = isl_map_apply_range (pbb->transformed, x);
+  }
 }
 
 /* Apply the interchange of loops at depths DEPTH1 and DEPTH2 to all

@@ -1148,6 +1148,22 @@ pbb_update_scattering (poly_bb_p pbb, graphite_dim_t level, int dewey)
   ppl_delete_Linear_Expression (expr);
   ppl_Polyhedron_add_constraint (ph, new_cstr);
   ppl_delete_Constraint (new_cstr);
+
+  {
+    isl_space *d = isl_map_get_space (pbb->transformed);
+    isl_space *d1 = isl_space_range (d);
+    unsigned i, n = isl_space_dim (d1, isl_dim_out);
+    isl_space *d2 = isl_space_add_dims (d1, isl_dim_in, n);
+    isl_map *x = isl_map_universe (d2);
+
+    x = isl_map_fix_si (x, isl_dim_out, sched, dewey);
+
+    for (i = 0; i < n; i++)
+      if (i != sched)
+	x = isl_map_equate (x, isl_dim_in, i, isl_dim_out, i);
+
+    pbb->transformed = isl_map_apply_range (pbb->transformed, x);
+  }
 }
 
 /* Updates the scattering of all the PBBs under LST to be at the DEWEY
