@@ -22,12 +22,6 @@ along with GCC; see the file COPYING3.  If not see
 #define GRAPHITE_CLOOG_UTIL_H
 
 CloogMatrix *new_Cloog_Matrix_from_ppl_Polyhedron (ppl_const_Polyhedron_t);
-CloogDomain *new_Cloog_Domain_from_ppl_Polyhedron (ppl_const_Polyhedron_t,
-						   int, CloogState *);
-CloogScattering *new_Cloog_Scattering_from_ppl_Polyhedron
-  (ppl_const_Polyhedron_t, int, int, CloogState *);
-CloogDomain * new_Cloog_Domain_from_ppl_Pointset_Powerset
-  (ppl_Pointset_Powerset_C_Polyhedron_t, int, CloogState *);
 void new_C_Polyhedron_from_Cloog_Matrix (ppl_Polyhedron_t *, CloogMatrix *);
 void openscop_print_polyhedron_matrix (FILE *, ppl_const_Polyhedron_t, int,
 				       int, int, int);

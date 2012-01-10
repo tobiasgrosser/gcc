@@ -1375,10 +1375,49 @@ init_cloog_input_file (int scop_number)
   return graphite_out_file;
 }
 
+/* Extend the scattering to NEW_DIMS scattering dimensions.  */
+
+static
+isl_map *extend_scattering(isl_map *scattering, int new_dims)
+{
+  int old_dims, i;
+  isl_space *space;
+  isl_basic_map *change_scattering;
+  isl_map *change_scattering_map;
+
+  old_dims = isl_map_dim (scattering, isl_dim_out);
+
+  space = isl_space_alloc (isl_map_get_ctx (scattering), 0, old_dims, new_dims);
+  change_scattering = isl_basic_map_universe (isl_space_copy (space));
+
+  for (i = 0; i < old_dims; i++)
+    {
+      isl_constraint *c;
+      c = isl_equality_alloc
+	(isl_local_space_from_space (isl_space_copy (space)));
+      isl_constraint_set_coefficient_si (c, isl_dim_in, i, 1);
+      isl_constraint_set_coefficient_si (c, isl_dim_out, i, -1);
+      change_scattering = isl_basic_map_add_constraint (change_scattering, c);
+    }
+
+  for (i = old_dims; i < new_dims; i++)
+    {
+      isl_constraint *c;
+      c = isl_equality_alloc
+	(isl_local_space_from_space (isl_space_copy (space)));
+      isl_constraint_set_coefficient_si (c, isl_dim_out, i, 1);
+      change_scattering = isl_basic_map_add_constraint (change_scattering, c);
+    }
+
+  change_scattering_map = isl_map_from_basic_map (change_scattering);
+  change_scattering_map = isl_map_align_params (change_scattering_map, space);
+  return isl_map_apply_range (scattering, change_scattering_map);
+}
+
 /* Build cloog union domain for SCoP.  */
 
 static CloogUnionDomain *
-build_cloog_union_domain (scop_p scop)
+build_cloog_union_domain (scop_p scop, int nb_scattering_dims)
 {
   int i;
   poly_bb_p pbb;
@@ -1392,16 +1431,12 @@ build_cloog_union_domain (scop_p scop)
 
       /* Dead code elimination: when the domain of a PBB is empty,
 	 don't generate code for the PBB.  */
-      if (ppl_Pointset_Powerset_C_Polyhedron_is_empty (PBB_DOMAIN (pbb)))
+      if (isl_set_is_empty(pbb->domain))
 	continue;
 
-      domain = new_Cloog_Domain_from_ppl_Pointset_Powerset (PBB_DOMAIN (pbb),
-							    scop_nb_params (scop),
-							    cloog_state);
-
-      scattering = new_Cloog_Scattering_from_ppl_Polyhedron
-	(PBB_TRANSFORMED_SCATTERING (pbb), scop_nb_params (scop),
-	 pbb_nb_scattering_transform (pbb), cloog_state);
+      domain = cloog_domain_from_isl_set(isl_set_copy(pbb->domain));
+      scattering = cloog_scattering_from_isl_map(extend_scattering(isl_map_copy(pbb->transformed),
+						 nb_scattering_dims));
 
       union_domain = cloog_union_domain_add_domain (union_domain, "", domain,
 						    scattering, pbb);
@@ -1472,42 +1507,38 @@ debug_clast_stmt (struct clast_stmt *stmt)
   print_clast_stmt (stderr, stmt);
 }
 
+/* Get the maximal number of scattering dimensions in the scop SCOP.  */
+
+static
+int get_max_scattering_dimensions (scop_p scop)
+{
+  int i;
+  poly_bb_p pbb;
+  int scattering_dims = 0;
+
+  FOR_EACH_VEC_ELT (poly_bb_p, SCOP_BBS (scop), i, pbb)
+    {
+      int pbb_scatt_dims = isl_map_dim (pbb->transformed, isl_dim_out);
+      if (pbb_scatt_dims > scattering_dims)
+	scattering_dims = pbb_scatt_dims;
+    }
+
+  return scattering_dims;
+}
+
 static CloogInput *
 generate_cloog_input (scop_p scop, htab_t params_index)
 {
   CloogUnionDomain *union_domain;
   CloogInput *cloog_input;
   CloogDomain *context;
+  int nb_scattering_dims = get_max_scattering_dimensions (scop);
 
-  int nb_scattering_dims = unify_scattering_dimensions (scop);
-  union_domain = build_cloog_union_domain (scop);
+  union_domain = build_cloog_union_domain (scop, nb_scattering_dims);
   union_domain = add_names_to_union_domain (scop, union_domain,
 					    nb_scattering_dims,
 					    params_index);
-
-  if (1)
-    {
-      /* For now remove the isl_id's from the context before
-	 translating to CLooG: this code will be removed when the
-	 domain will also contain isl_id's.  */
-      isl_set *ct = isl_set_project_out (isl_set_copy (scop->context),
-					 isl_dim_set, 0, number_of_loops ());
-      isl_printer *p = isl_printer_to_str (scop->ctx);
-      char *str;
-
-      p = isl_printer_set_output_format (p, ISL_FORMAT_EXT_POLYLIB);
-      p = isl_printer_print_set (p, ct);
-      isl_set_free (ct);
-
-      str = isl_printer_get_str (p);
-      ct = isl_set_read_from_str (scop->ctx, str);
-
-      free (str);
-      isl_printer_free (p);
-      context = cloog_domain_from_isl_set (ct);
-    }
-  else
-    context = cloog_domain_from_isl_set (isl_set_copy (scop->context));
+  context = cloog_domain_from_isl_set (isl_set_copy (scop->context));
 
   cloog_input = cloog_input_alloc (context, union_domain);
 
