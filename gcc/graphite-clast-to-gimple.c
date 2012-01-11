@@ -138,12 +138,11 @@ clast_name_to_level (clast_name_p name, htab_t index_table)
    SCATTERING_DIMENSIONS vector.  */
 
 static inline int
-clast_name_to_index (clast_name_p name, htab_t index_table)
+clast_name_to_index (struct clast_name *name, htab_t index_table)
 {
   struct clast_name_index tmp;
   PTR *slot;
 
-  gcc_assert (name->type == clast_expr_name);
   tmp.name = ((const struct clast_name *) name)->name;
   tmp.free_name = NULL;
 
@@ -160,14 +159,13 @@ clast_name_to_index (clast_name_p name, htab_t index_table)
    found in the INDEX_TABLE, false otherwise.  */
 
 static inline bool
-clast_name_to_lb_ub (clast_name_p name, htab_t index_table, mpz_t bound_one,
-		     mpz_t bound_two)
+clast_name_to_lb_ub (struct clast_name *name, htab_t index_table,
+		     mpz_t bound_one, mpz_t bound_two)
 {
   struct clast_name_index tmp;
   PTR *slot;
 
-  gcc_assert (name->type == clast_expr_name);
-  tmp.name = ((const struct clast_name *) name)->name;
+  tmp.name = name->name;
   tmp.free_name = NULL;
 
   slot = htab_find_slot (index_table, &tmp, NO_INSERT);
@@ -249,7 +247,7 @@ typedef struct ivs_params {
    Cloog representation.  */
 
 static tree
-clast_name_to_gcc (clast_name_p name, ivs_params_p ip)
+clast_name_to_gcc (struct clast_name *name, ivs_params_p ip)
 {
   int index;
 
@@ -345,6 +343,10 @@ clast_to_gcc_expression (tree type, struct clast_expr *e, ivs_params_p ip)
 {
   switch (e->type)
     {
+    case clast_expr_name:
+      {
+	return clast_name_to_gcc ((struct clast_name *) e, ip);
+      }
     case clast_expr_term:
       {
 	struct clast_term *t = (struct clast_term *) e;
@@ -353,7 +355,7 @@ clast_to_gcc_expression (tree type, struct clast_expr *e, ivs_params_p ip)
 	  {
 	    if (mpz_cmp_si (t->val, 1) == 0)
 	      {
-		tree name = clast_name_to_gcc (t->var, ip);
+		tree name = clast_to_gcc_expression (type, t->var, ip);
 
 		if (POINTER_TYPE_P (TREE_TYPE (name)) != POINTER_TYPE_P (type))
 		  name = convert_to_ptrofftype (name);
@@ -364,7 +366,7 @@ clast_to_gcc_expression (tree type, struct clast_expr *e, ivs_params_p ip)
 
 	    else if (mpz_cmp_si (t->val, -1) == 0)
 	      {
-		tree name = clast_name_to_gcc (t->var, ip);
+		tree name = clast_to_gcc_expression (type, t->var, ip);
 
 		if (POINTER_TYPE_P (TREE_TYPE (name)) != POINTER_TYPE_P (type))
 		  name = convert_to_ptrofftype (name);
@@ -375,7 +377,7 @@ clast_to_gcc_expression (tree type, struct clast_expr *e, ivs_params_p ip)
 	      }
 	    else
 	      {
-		tree name = clast_name_to_gcc (t->var, ip);
+		tree name = clast_to_gcc_expression (type, t->var, ip);
 		tree cst = gmp_cst_to_tree (type, t->val);
 
 		if (POINTER_TYPE_P (TREE_TYPE (name)) != POINTER_TYPE_P (type))
@@ -504,6 +506,9 @@ type_for_value (mpz_t val)
   return type_for_interval (val, val);
 }
 
+static tree
+type_for_clast_expr (struct clast_expr *, ivs_params_p, mpz_t, mpz_t);
+
 /* Return the type for the clast_term T.  Initializes BOUND_ONE and
    BOUND_TWO to the bounds of the term.  */
 
@@ -511,37 +516,23 @@ static tree
 type_for_clast_term (struct clast_term *t, ivs_params_p ip, mpz_t bound_one,
 		     mpz_t bound_two)
 {
-  clast_name_p name = t->var;
-  bool found = false;
-
+  tree type;
   gcc_assert (t->expr.type == clast_expr_term);
 
-  if (!name)
+  if (!t->var)
     {
       mpz_set (bound_one, t->val);
       mpz_set (bound_two, t->val);
       return type_for_value (t->val);
     }
 
-  if (ip->params && ip->params_index)
-    found = clast_name_to_lb_ub (name, ip->params_index, bound_one, bound_two);
-
-  if (!found)
-    {
-      gcc_assert (*(ip->newivs) && ip->newivs_index);
-      found = clast_name_to_lb_ub (name, ip->newivs_index,
-				   bound_one, bound_two);
-      gcc_assert (found);
-    }
+  type = type_for_clast_expr (t->var, ip, bound_one, bound_two);
 
   mpz_mul (bound_one, bound_one, t->val);
   mpz_mul (bound_two, bound_two, t->val);
 
-  return TREE_TYPE (clast_name_to_gcc (name, ip));
+  return max_precision_type (type, type_for_interval (bound_one, bound_two));
 }
-
-static tree
-type_for_clast_expr (struct clast_expr *, ivs_params_p, mpz_t, mpz_t);
 
 /* Return the type for the clast_reduction R.  Initializes BOUND_ONE
    and BOUND_TWO to the bounds of the reduction expression.  */
@@ -650,6 +641,29 @@ type_for_clast_bin (struct clast_binary *b, ivs_params_p ip, mpz_t bound_one,
   return max_precision_type (type, type_for_interval (bound_one, bound_two));
 }
 
+/* Return the type for the clast_name NAME.  Initializes BOUND_ONE and
+   BOUND_TWO to the bounds of the term.  */
+
+static tree
+type_for_clast_name (struct clast_name *name, ivs_params_p ip, mpz_t bound_one,
+		     mpz_t bound_two)
+{
+  bool found = false;
+
+  if (ip->params && ip->params_index)
+    found = clast_name_to_lb_ub (name, ip->params_index, bound_one, bound_two);
+
+  if (!found)
+    {
+      gcc_assert (*(ip->newivs) && ip->newivs_index);
+      found = clast_name_to_lb_ub (name, ip->newivs_index, bound_one,
+				   bound_two);
+      gcc_assert (found);
+    }
+
+    return TREE_TYPE (clast_name_to_gcc (name, ip));
+}
+
 /* Returns the type for the CLAST expression E when used in statement
    STMT.  */
 
@@ -669,6 +683,10 @@ type_for_clast_expr (struct clast_expr *e, ivs_params_p ip, mpz_t bound_one,
 
     case clast_expr_bin:
       return type_for_clast_bin ((struct clast_binary *) e, ip,
+				 bound_one, bound_two);
+
+    case clast_expr_name:
+      return type_for_clast_name ((struct clast_name *) e, ip,
 				 bound_one, bound_two);
 
     default:
