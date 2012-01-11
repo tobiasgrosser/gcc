@@ -502,6 +502,12 @@ pbb_dim_iter_domain (const struct poly_bb *pbb)
 {
   scop_p scop = PBB_SCOP (pbb);
   ppl_dimension_type dim;
+  isl_space *d = isl_set_get_space (pbb->domain);
+  graphite_dim_t res = isl_space_dim (d, isl_dim_set);
+
+  isl_space_free (d);
+  if (0)
+    return res;
 
   ppl_Pointset_Powerset_C_Polyhedron_space_dimension (PBB_DOMAIN (pbb), &dim);
   return dim - scop_nb_params (scop);

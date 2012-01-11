@@ -407,6 +407,16 @@ build_scop_bbs (scop_p scop)
   sbitmap_free (visited);
 }
 
+/* Return an ISL identifier for the polyhedral basic block PBB.  */
+
+static isl_id *
+isl_id_for_pbb (scop_p s, poly_bb_p pbb)
+{
+  char name[50];
+  snprintf (name, sizeof (name), "S_%d", pbb_index (pbb));
+  return isl_id_alloc (s->ctx, name, pbb);
+}
+
 /* Converts the STATIC_SCHEDULE of PBB into a scattering polyhedron.
    We generate SCATTERING_DIMENSIONS scattering dimensions.
 
@@ -656,20 +666,6 @@ isl_id_for_ssa_name (scop_p s, tree e)
       snprintf (name1, sizeof (name1), "P_%d", SSA_NAME_VERSION (e));
       id = isl_id_alloc (s->ctx, name1, e);
     }
-
-  return id;
-}
-
-/* Return an ISL identifier from the loop L.  */
-
-static isl_id *
-isl_id_for_loop (scop_p s, loop_p l)
-{
-  isl_id *id;
-  char name[50];
-
-  snprintf (name, sizeof (name), "L_%d", l ? l->num : -1);
-  id = isl_id_alloc (s->ctx, name, l);
 
   return id;
 }
@@ -1188,10 +1184,6 @@ find_scop_parameters (scop_p scop)
       space = isl_space_set_dim_id (space, isl_dim_param, i,
 				    isl_id_for_ssa_name (scop, e));
 
-    for (i = 0; i < nbl; i++)
-      space = isl_space_set_dim_id (space, isl_dim_set, i,
-				    isl_id_for_loop (scop, get_loop (i)));
-
     scop->context = isl_set_universe (space);
   }
 }
@@ -1269,13 +1261,26 @@ add_upper_bounds_from_estimated_nit (scop_p scop, double_int nit,
 static void
 build_loop_iteration_domains (scop_p scop, struct loop *loop,
                               ppl_Polyhedron_t outer_ph, int nb,
-			      ppl_Pointset_Powerset_C_Polyhedron_t *domains)
+			      ppl_Pointset_Powerset_C_Polyhedron_t *domains,
+			      isl_set *outer, isl_set **doms)
 {
   int i;
   ppl_Polyhedron_t ph;
   tree nb_iters = number_of_latch_executions (loop);
   ppl_dimension_type dim = nb + 1 + scop_nb_params (scop);
   sese region = SCOP_REGION (scop);
+
+  isl_set *inner = isl_set_copy (outer);
+  isl_space *space;
+  int pos = isl_set_dim (outer, isl_dim_set);
+  isl_int v;
+  mpz_t g;
+
+  mpz_init (g);
+  isl_int_init (v);
+
+  inner = isl_set_add_dims (inner, isl_dim_set, 1);
+  space = isl_set_get_space (inner);
 
   {
     ppl_const_Constraint_System_t pcs;
@@ -1307,8 +1312,17 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
     ppl_delete_Linear_Expression (lb_expr);
     ppl_Polyhedron_add_constraint (ph, lb);
     ppl_delete_Constraint (lb);
+
+    {
+      isl_constraint *c;
+      c = isl_inequality_alloc
+	(isl_local_space_from_space (isl_space_copy (space)));
+      c = isl_constraint_set_coefficient_si (c, isl_dim_set, pos, 1);
+      inner = isl_set_add_constraint (inner, c);
+    }
   }
 
+  /* loop_i <= cst_nb_iters */
   if (TREE_CODE (nb_iters) == INTEGER_CST)
     {
       ppl_Constraint_t ub;
@@ -1316,14 +1330,27 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
 
       ppl_new_Linear_Expression_with_dimension (&ub_expr, dim);
 
-      /* loop_i <= cst_nb_iters */
       ppl_set_coef (ub_expr, nb, -1);
       ppl_set_inhomogeneous_tree (ub_expr, nb_iters);
       ppl_new_Constraint (&ub, ub_expr, PPL_CONSTRAINT_TYPE_GREATER_OR_EQUAL);
       ppl_Polyhedron_add_constraint (ph, ub);
       ppl_delete_Linear_Expression (ub_expr);
       ppl_delete_Constraint (ub);
+
+      {
+	isl_constraint *c;
+
+	c = isl_inequality_alloc
+	  (isl_local_space_from_space(isl_space_copy (space)));
+	c = isl_constraint_set_coefficient_si (c, isl_dim_set, pos, -1);
+	tree_int_to_gmp (nb_iters, g);
+	isl_int_set_gmp (v, g);
+	c = isl_constraint_set_constant (c, v);
+	inner = isl_set_add_constraint (inner, c);
+      }
     }
+
+  /* loop_i <= expr_nb_iters */
   else if (!chrec_contains_undetermined (nb_iters))
     {
       mpz_t one;
@@ -1331,6 +1358,7 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
       ppl_Linear_Expression_t ub_expr;
       double_int nit;
       isl_pw_aff *aff;
+      isl_set *valid;
 
       mpz_init (one);
       mpz_set_si (one, 1);
@@ -1339,9 +1367,24 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
       scan_tree_for_params (SCOP_REGION (scop), nb_iters, ub_expr, one);
       mpz_clear (one);
 
-      aff = extract_affine (scop, nb_iters);
-      scop->context = isl_set_intersect
-	(scop->context, isl_pw_aff_nonneg_set (isl_pw_aff_copy (aff)));
+      aff = extract_affine (scop, nb_iters, isl_set_get_space (inner));
+      valid = isl_pw_aff_nonneg_set (isl_pw_aff_copy (aff));
+      valid = isl_set_project_out (valid, isl_dim_set, 0,
+				   isl_set_dim (valid, isl_dim_set));
+      scop->context = isl_set_intersect (scop->context, valid);
+
+      {
+	isl_local_space *ls;
+	isl_aff *al;
+	isl_set *le;
+
+	ls = isl_local_space_from_space (isl_space_copy (space));
+	al = isl_aff_set_coefficient_si (isl_aff_zero_on_domain (ls),
+					 isl_dim_in, pos, 1);
+	le = isl_pw_aff_le_set (isl_pw_aff_from_aff (al),
+				isl_pw_aff_copy (aff));
+	inner = isl_set_intersect (inner, le);
+      }
 
       if (max_stmt_executions (loop, true, &nit))
 	{
@@ -1357,17 +1400,27 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
 	    isl_pw_aff *approx;
 	    mpz_t g;
 	    isl_set *x;
+	    isl_constraint *c;
 
 	    mpz_init (g);
 	    mpz_set_double_int (g, nit, false);
-	    approx = extract_affine_gmp (scop, g);
-	    mpz_clear (g);
+	    mpz_sub_ui (g, g, 1);
+	    approx = extract_affine_gmp (g, isl_set_get_space (inner));
 	    x = isl_pw_aff_ge_set (approx, aff);
+	    x = isl_set_project_out (x, isl_dim_set, 0,
+				     isl_set_dim (x, isl_dim_set));
 	    scop->context = isl_set_intersect (scop->context, x);
+
+	    c = isl_inequality_alloc
+	      (isl_local_space_from_space (isl_space_copy (space)));
+	    c = isl_constraint_set_coefficient_si (c, isl_dim_set, pos, -1);
+	    isl_int_set_gmp (v, g);
+	    mpz_clear (g);
+	    c = isl_constraint_set_constant (c, v);
+	    inner = isl_set_add_constraint (inner, c);
 	  }
 	}
 
-      /* loop_i <= expr_nb_iters */
       ppl_set_coef (ub_expr, nb, -1);
       ppl_new_Constraint (&ub, ub_expr, PPL_CONSTRAINT_TYPE_GREATER_OR_EQUAL);
       ppl_Polyhedron_add_constraint (ph, ub);
@@ -1378,17 +1431,24 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
     gcc_unreachable ();
 
   if (loop->inner && loop_in_sese_p (loop->inner, region))
-    build_loop_iteration_domains (scop, loop->inner, ph, nb + 1, domains);
+    build_loop_iteration_domains (scop, loop->inner, ph, nb + 1, domains,
+				  isl_set_copy (inner), doms);
 
   if (nb != 0
       && loop->next
       && loop_in_sese_p (loop->next, region))
-    build_loop_iteration_domains (scop, loop->next, outer_ph, nb, domains);
+    build_loop_iteration_domains (scop, loop->next, outer_ph, nb, domains,
+				  isl_set_copy (outer), doms);
+
+  doms[loop->num] = inner;
 
   ppl_new_Pointset_Powerset_C_Polyhedron_from_C_Polyhedron
     (&domains[loop->num], ph);
-
   ppl_delete_Polyhedron (ph);
+  isl_set_free (outer);
+  isl_space_free (space);
+  isl_int_clear (v);
+  mpz_clear (g);
 }
 
 /* Returns a linear expression for tree T evaluated in PBB.  */
@@ -1500,6 +1560,19 @@ add_condition_to_domain (ppl_Pointset_Powerset_C_Polyhedron_t ps, gimple stmt,
   ppl_delete_Linear_Expression (right);
 }
 
+/* Returns a linear expression for tree T evaluated in PBB.  */
+
+static isl_pw_aff *
+create_pw_aff_from_tree (poly_bb_p pbb, tree t)
+{
+  scop_p scop = PBB_SCOP (pbb);
+
+  t = scalar_evolution_in_region (SCOP_REGION (scop), pbb_loop (pbb), t);
+  gcc_assert (!automatically_generated_chrec_p (t));
+
+  return extract_affine (scop, t, isl_set_get_space (pbb->domain));
+}
+
 /* Add conditional statement STMT to pbb.  CODE is used as the comparision
    operator.  This allows us to invert the condition or to handle
    inequalities.  */
@@ -1520,6 +1593,48 @@ add_condition_to_pbb (poly_bb_p pbb, gimple stmt, enum tree_code code)
     }
   else
     add_condition_to_domain (PBB_DOMAIN (pbb), stmt, pbb, code);
+
+  {
+    isl_pw_aff *lhs = create_pw_aff_from_tree (pbb, gimple_cond_lhs (stmt));
+    isl_pw_aff *rhs = create_pw_aff_from_tree (pbb, gimple_cond_rhs (stmt));
+    isl_set *cond;
+
+    switch (code)
+      {
+      case LT_EXPR:
+	cond = isl_pw_aff_lt_set (lhs, rhs);
+	break;
+
+      case GT_EXPR:
+	cond = isl_pw_aff_gt_set (lhs, rhs);
+	break;
+
+      case LE_EXPR:
+	cond = isl_pw_aff_le_set (lhs, rhs);
+	break;
+
+      case GE_EXPR:
+	cond = isl_pw_aff_ge_set (lhs, rhs);
+	break;
+
+      case EQ_EXPR:
+	cond = isl_pw_aff_eq_set (lhs, rhs);
+	break;
+
+      case NE_EXPR:
+	cond = isl_pw_aff_ne_set (lhs, rhs);
+	break;
+
+      default:
+	isl_pw_aff_free(lhs);
+	isl_pw_aff_free(rhs);
+	return;
+      }
+
+    cond = isl_set_coalesce (cond);
+    cond = isl_set_set_tuple_id (cond, isl_set_get_tuple_id (pbb->domain));
+    pbb->domain = isl_set_intersect (pbb->domain, cond);
+  }
 }
 
 /* Add conditions to the domain of PBB.  */
@@ -1819,31 +1934,55 @@ build_scop_iteration_domain (scop_p scop)
   int nb_loops = number_of_loops ();
   ppl_Pointset_Powerset_C_Polyhedron_t *domains
     = XNEWVEC (ppl_Pointset_Powerset_C_Polyhedron_t, nb_loops);
+  isl_set **doms = XNEWVEC (isl_set *, nb_loops);
 
   for (i = 0; i < nb_loops; i++)
-    domains[i] = NULL;
+    {
+      domains[i] = NULL;
+      doms[i] = NULL;
+    }
 
   ppl_new_C_Polyhedron_from_space_dimension (&ph, scop_nb_params (scop), 0);
 
   FOR_EACH_VEC_ELT (loop_p, SESE_LOOP_NEST (region), i, loop)
     if (!loop_in_sese_p (loop_outer (loop), region))
-      build_loop_iteration_domains (scop, loop, ph, 0, domains);
+      build_loop_iteration_domains (scop, loop, ph, 0, domains,
+				    isl_set_copy (scop->context), doms);
 
   FOR_EACH_VEC_ELT (poly_bb_p, SCOP_BBS (scop), i, pbb)
-    if (domains[gbb_loop (PBB_BLACK_BOX (pbb))->num])
-      ppl_new_Pointset_Powerset_C_Polyhedron_from_Pointset_Powerset_C_Polyhedron
-	(&PBB_DOMAIN (pbb), (ppl_const_Pointset_Powerset_C_Polyhedron_t)
-	 domains[gbb_loop (PBB_BLACK_BOX (pbb))->num]);
-    else
-      ppl_new_Pointset_Powerset_C_Polyhedron_from_C_Polyhedron
-	(&PBB_DOMAIN (pbb), ph);
+    {
+      loop = pbb_loop (pbb);
+
+      if (domains[loop->num])
+      	ppl_new_Pointset_Powerset_C_Polyhedron_from_Pointset_Powerset_C_Polyhedron
+	  (&PBB_DOMAIN (pbb), (ppl_const_Pointset_Powerset_C_Polyhedron_t)
+	   domains[loop->num]);
+      else
+      	ppl_new_Pointset_Powerset_C_Polyhedron_from_C_Polyhedron
+	  (&PBB_DOMAIN (pbb), ph);
+
+      if (doms[loop->num])
+	pbb->domain = isl_set_copy (doms[loop->num]);
+      else
+	pbb->domain = isl_set_copy (scop->context);
+
+      pbb->domain = isl_set_set_tuple_id (pbb->domain,
+					  isl_id_for_pbb (scop, pbb));
+    }
 
   for (i = 0; i < nb_loops; i++)
-    if (domains[i])
-      ppl_delete_Pointset_Powerset_C_Polyhedron (domains[i]);
+    {
+      if (domains[i])
+	ppl_delete_Pointset_Powerset_C_Polyhedron (domains[i]);
+
+      if (doms[i])
+	isl_set_free (doms[i]);
+    }
 
   ppl_delete_Polyhedron (ph);
   free (domains);
+
+  free (doms);
 }
 
 /* Add a constrain to the ACCESSES polyhedron for the alias set of
@@ -2467,6 +2606,8 @@ new_pbb_from_pbb (scop_p scop, poly_bb_p pbb, basic_block bb)
   if (PBB_DOMAIN (pbb))
     ppl_new_Pointset_Powerset_C_Polyhedron_from_Pointset_Powerset_C_Polyhedron
       (&PBB_DOMAIN (pbb1), PBB_DOMAIN (pbb));
+
+  pbb1->domain = isl_set_copy (pbb->domain);
 
   GBB_PBB (gbb1) = pbb1;
   GBB_CONDITIONS (gbb1) = VEC_copy (gimple, heap, GBB_CONDITIONS (gbb));

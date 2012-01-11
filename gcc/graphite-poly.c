@@ -880,6 +880,7 @@ new_poly_bb (scop_p scop, void *black_box)
   poly_bb_p pbb = XNEW (struct poly_bb);
 
   PBB_DOMAIN (pbb) = NULL;
+  pbb->domain = NULL;
   PBB_SCOP (pbb) = scop;
   pbb_set_black_box (pbb, black_box);
   PBB_TRANSFORMED (pbb) = NULL;
@@ -901,7 +902,10 @@ free_poly_bb (poly_bb_p pbb)
   int i;
   poly_dr_p pdr;
 
-  ppl_delete_Pointset_Powerset_C_Polyhedron (PBB_DOMAIN (pbb));
+  if (PBB_DOMAIN (pbb))
+    ppl_delete_Pointset_Powerset_C_Polyhedron (PBB_DOMAIN (pbb));
+
+  isl_set_free (pbb->domain);
 
   if (PBB_TRANSFORMED (pbb))
     poly_scattering_free (PBB_TRANSFORMED (pbb));
@@ -1095,6 +1099,12 @@ print_pbb_domain (FILE *file, poly_bb_p pbb, int verbosity)
 {
   graphite_dim_t i;
   gimple_bb_p gbb = PBB_BLACK_BOX (pbb);
+
+  {
+    isl_printer *pp = isl_printer_to_file (PBB_SCOP (pbb)->ctx, file);
+    pp = isl_printer_print_set (pp, pbb->domain);
+    isl_printer_free (pp);
+  }
 
   if (!PBB_DOMAIN (pbb))
     return;
