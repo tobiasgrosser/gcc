@@ -881,6 +881,9 @@ new_poly_bb (scop_p scop, void *black_box)
 
   PBB_DOMAIN (pbb) = NULL;
   pbb->domain = NULL;
+  pbb->schedule = NULL;
+  pbb->transformed = NULL;
+  pbb->saved = NULL;
   PBB_SCOP (pbb) = scop;
   pbb_set_black_box (pbb, black_box);
   PBB_TRANSFORMED (pbb) = NULL;
@@ -906,6 +909,9 @@ free_poly_bb (poly_bb_p pbb)
     ppl_delete_Pointset_Powerset_C_Polyhedron (PBB_DOMAIN (pbb));
 
   isl_set_free (pbb->domain);
+  isl_map_free (pbb->schedule);
+  isl_map_free (pbb->transformed);
+  isl_map_free (pbb->saved);
 
   if (PBB_TRANSFORMED (pbb))
     poly_scattering_free (PBB_TRANSFORMED (pbb));

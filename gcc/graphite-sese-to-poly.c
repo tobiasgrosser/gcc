@@ -451,7 +451,8 @@ isl_id_for_pbb (scop_p s, poly_bb_p pbb)
    | 0   0   1   0   0   0   0   0  -5  = 0  */
 
 static void
-build_pbb_scattering_polyhedrons (ppl_Linear_Expression_t static_schedule,
+build_pbb_scattering_polyhedrons (isl_aff *static_sched,
+				  ppl_Linear_Expression_t static_schedule,
 				  poly_bb_p pbb, int scattering_dimensions)
 {
   int i;
@@ -462,9 +463,11 @@ build_pbb_scattering_polyhedrons (ppl_Linear_Expression_t static_schedule,
   ppl_Coefficient_t c;
   ppl_dimension_type dim = scattering_dimensions + nb_iterators + nb_params;
   mpz_t v;
+  isl_int val;
 
   gcc_assert (scattering_dimensions >= used_scattering_dimensions);
 
+  isl_int_init (val);
   mpz_init (v);
   ppl_new_Coefficient (&c);
   PBB_TRANSFORMED (pbb) = poly_scattering_new ();
@@ -472,6 +475,13 @@ build_pbb_scattering_polyhedrons (ppl_Linear_Expression_t static_schedule,
     (&PBB_TRANSFORMED_SCATTERING (pbb), dim, 0);
 
   PBB_NB_SCATTERING_TRANSFORM (pbb) = scattering_dimensions;
+
+  {
+    isl_space *dc = isl_set_get_space (pbb->domain);
+    isl_space *dm = isl_space_add_dims (isl_space_from_domain (dc),
+					isl_dim_out, scattering_dimensions);
+    pbb->schedule = isl_map_universe (dm);
+  }
 
   for (i = 0; i < scattering_dimensions; i++)
     {
@@ -491,6 +501,20 @@ build_pbb_scattering_polyhedrons (ppl_Linear_Expression_t static_schedule,
 	  mpz_neg (v, v);
 	  ppl_assign_Coefficient_from_mpz_t (c, v);
 	  ppl_Linear_Expression_add_to_inhomogeneous (expr, c);
+
+	  {
+	    isl_constraint *c = isl_equality_alloc
+	      (isl_local_space_from_space (isl_map_get_space (pbb->schedule)));
+
+	    if (0 != isl_aff_get_coefficient (static_sched, isl_dim_in,
+					      i / 2, &val))
+	      gcc_unreachable ();
+
+	    isl_int_neg (val, val);
+	    c = isl_constraint_set_constant (c, val);
+	    c = isl_constraint_set_coefficient_si (c, isl_dim_out, i, 1);
+	    pbb->schedule = isl_map_add_constraint (pbb->schedule, c);
+	  }
 	}
 
       /* Iterations of this loop.  */
@@ -502,6 +526,11 @@ build_pbb_scattering_polyhedrons (ppl_Linear_Expression_t static_schedule,
 	  ppl_assign_Coefficient_from_mpz_t (c, v);
 	  ppl_Linear_Expression_add_to_coefficient
 	    (expr, scattering_dimensions + loop, c);
+
+	  {
+	    pbb->schedule = isl_map_equate (pbb->schedule, isl_dim_in, loop,
+					    isl_dim_out, i);
+	  }
 	}
 
       ppl_new_Constraint (&cstr, expr, PPL_CONSTRAINT_TYPE_EQUAL);
@@ -510,10 +539,12 @@ build_pbb_scattering_polyhedrons (ppl_Linear_Expression_t static_schedule,
       ppl_delete_Constraint (cstr);
     }
 
+  isl_int_clear (val);
   mpz_clear (v);
   ppl_delete_Coefficient (c);
 
   PBB_ORIGINAL (pbb) = poly_scattering_copy (PBB_TRANSFORMED (pbb));
+  pbb->transformed = isl_map_copy (pbb->schedule);
 }
 
 /* Build for BB the static schedule.
@@ -561,6 +592,11 @@ build_scop_scattering (scop_p scop)
   ppl_Linear_Expression_t static_schedule;
   ppl_Coefficient_t c;
   mpz_t v;
+  isl_space *dc = isl_set_get_space (scop->context);
+  isl_aff *static_sched;
+
+  dc = isl_space_add_dims (dc, isl_dim_set, number_of_loops());
+  static_sched = isl_aff_zero_on_domain (isl_local_space_from_space (dc));
 
   mpz_init (v);
   ppl_new_Coefficient (&c);
@@ -573,6 +609,8 @@ build_scop_scattering (scop_p scop)
   mpz_set_si (v, -1);
   ppl_assign_Coefficient_from_mpz_t (c, v);
   ppl_Linear_Expression_add_to_coefficient (static_schedule, 0, c);
+
+  static_sched = isl_aff_add_coefficient_si (static_sched, isl_dim_in, 0, -1);
 
   FOR_EACH_VEC_ELT (poly_bb_p, SCOP_BBS (scop), i, pbb)
     {
@@ -597,11 +635,14 @@ build_scop_scattering (scop_p scop)
       ppl_assign_Linear_Expression_from_Linear_Expression (static_schedule,
 							   common);
 
-      build_pbb_scattering_polyhedrons (common, pbb, nb_scat_dims);
-
+      static_sched = isl_aff_add_coefficient_si (static_sched, isl_dim_in,
+						 prefix, 1);
+      build_pbb_scattering_polyhedrons (static_sched, common, pbb,
+					nb_scat_dims);
       ppl_delete_Linear_Expression (common);
     }
 
+  isl_aff_free (static_sched);
   mpz_clear (v);
   ppl_delete_Coefficient (c);
   ppl_delete_Linear_Expression (static_schedule);

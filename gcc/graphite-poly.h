@@ -1521,6 +1521,9 @@ store_scattering_pbb (poly_bb_p pbb)
     poly_scattering_free (PBB_SAVED (pbb));
 
   PBB_SAVED (pbb) = poly_scattering_copy (PBB_TRANSFORMED (pbb));
+
+  isl_map_free (pbb->saved);
+  pbb->saved = isl_map_copy (pbb->transformed);
 }
 
 /* Stores the SCOP_TRANSFORMED_SCHEDULE to SCOP_SAVED_SCHEDULE.  */
@@ -1568,6 +1571,9 @@ restore_scattering_pbb (poly_bb_p pbb)
 
   poly_scattering_free (PBB_TRANSFORMED (pbb));
   PBB_TRANSFORMED (pbb) = poly_scattering_copy (PBB_SAVED (pbb));
+
+  isl_map_free (pbb->transformed);
+  pbb->transformed = isl_map_copy (pbb->saved);
 }
 
 /* Restores the scattering for all the pbbs in the SCOP.  */
