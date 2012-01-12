@@ -371,6 +371,7 @@ Objective-C and Objective-C++ Dialects}.
 -fno-ira-share-spill-slots -fira-verbose=@var{n} @gol
 -fivopts -fkeep-inline-functions -fkeep-static-consts @gol
 -floop-block -floop-flatten -floop-interchange -floop-strip-mine @gol
+-floop-optimize-isl @gol
 -floop-parallelize-all -flto -flto-compression-level @gol
 -flto-partition=@var{alg} -flto-report -fmerge-all-constants @gol
 -fmerge-constants -fmodulo-sched -fmodulo-sched-allow-regmoves @gol
@@ -7258,6 +7259,12 @@ dead code elimination in loops.
 Removes the loop nesting structure: transforms the loop nest into a
 single loop.  This transformation can be useful to vectorize all the
 levels of the loop nest.
+
+@item -floop-optimize-isl
+@opindex floop-optimize-isl
+Run the isl loop optimizer. This is a generic loop optimizer based on
+the Pluto optimization algorithms. It calculates a loop structure
+optimized for data-locality and parallelism.
 
 @item -floop-parallelize-all
 @opindex floop-parallelize-all

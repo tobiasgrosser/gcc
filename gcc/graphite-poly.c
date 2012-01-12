@@ -784,6 +784,11 @@ apply_poly_transforms (scop_p scop)
   if (flag_loop_flatten)
     transform_done |= flatten_all_loops (scop);
 
+  // This pass needs to be run at the final stage, as it does not
+  // update the lst.
+  if (flag_loop_optimize_isl)
+    transform_done |= optimize_isl (scop);
+
   /* This feature is only enabled in the Graphite branch.  */
   if (0)
     {

@@ -1243,6 +1243,7 @@ OBJS = \
 	graphite-dependences.o \
 	graphite-flattening.o \
 	graphite-interchange.o \
+	graphite-optimize-isl.o \
 	graphite-poly.o \
 	graphite-ppl.o \
 	graphite-scop-detection.o \
@@ -2621,6 +2622,9 @@ graphite-flattening.o : graphite-flattening.c $(CONFIG_H) $(SYSTEM_H)	\
    coretypes.h $(TREE_FLOW_H) $(TREE_DUMP_H) $(CFGLOOP_H) $(TREE_DATA_REF_H) \
    sese.h graphite-ppl.h graphite-poly.h
 graphite-interchange.o : graphite-interchange.c $(CONFIG_H) $(SYSTEM_H) \
+   coretypes.h $(TREE_FLOW_H) $(TREE_DUMP_H) $(CFGLOOP_H) $(TREE_DATA_REF_H) \
+   sese.h graphite-ppl.h graphite-poly.h
+graphite-flattening.o : graphite-optimize-isl.c $(CONFIG_H) $(SYSTEM_H)	\
    coretypes.h $(TREE_FLOW_H) $(TREE_DUMP_H) $(CFGLOOP_H) $(TREE_DATA_REF_H) \
    sese.h graphite-ppl.h graphite-poly.h
 graphite-poly.o : graphite-poly.c $(CONFIG_H) $(SYSTEM_H) coretypes.h \
