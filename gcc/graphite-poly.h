@@ -1,5 +1,5 @@
 /* Graphite polyhedral representation.
-   Copyright (C) 2009, 2010 Free Software Foundation, Inc.
+   Copyright (C) 2009, 2010, 2011 Free Software Foundation, Inc.
    Contributed by Sebastian Pop <sebastian.pop@amd.com> and
    Tobias Grosser <grosser@fim.uni-passau.de>.
 
@@ -180,7 +180,8 @@ struct poly_dr
      - P: Number of parameters.
 
      In the example, the vector "R C O I L P" is "7 7 3 2 0 1".  */
-  ppl_Pointset_Powerset_C_Polyhedron_t accesses;
+  ppl_Pointset_Powerset_C_Polyhedron_t _accesses;
+  isl_map *accesses;
 
   /* Data reference's base object set number, we must assure 2 pdrs are in the
      same base object set before dependency checking.  */
@@ -195,7 +196,7 @@ struct poly_dr
 #define PDR_CDR(PDR) (PDR->compiler_dr)
 #define PDR_PBB(PDR) (PDR->pbb)
 #define PDR_TYPE(PDR) (PDR->type)
-#define PDR_ACCESSES(PDR) (PDR->accesses)
+#define PDR_ACCESSES(PDR) (PDR->_accesses)
 #define PDR_BASE_OBJECT_SET(PDR) (PDR->dr_base_object_set)
 #define PDR_NB_SUBSCRIPTS(PDR) (PDR->nb_subscripts)
 
@@ -353,19 +354,23 @@ struct poly_bb
 
      The number of variables in the DOMAIN may change and is not
      related to the number of loops in the original code.  */
-  ppl_Pointset_Powerset_C_Polyhedron_t domain;
+  ppl_Pointset_Powerset_C_Polyhedron_t _domain;
+  isl_set *domain;
 
   /* The data references we access.  */
   VEC (poly_dr_p, heap) *drs;
 
   /* The original scattering.  */
-  poly_scattering_p original;
+  poly_scattering_p _original;
+  isl_map *schedule;
 
   /* The transformed scattering.  */
-  poly_scattering_p transformed;
+  poly_scattering_p _transformed;
+  isl_map *transformed;
 
   /* A copy of the transformed scattering.  */
-  poly_scattering_p saved;
+  poly_scattering_p _saved;
+  isl_map *saved;
 
   /* True when the PDR duplicates have already been removed.  */
   bool pdr_duplicates_removed;
@@ -376,15 +381,15 @@ struct poly_bb
 
 #define PBB_BLACK_BOX(PBB) ((gimple_bb_p) PBB->black_box)
 #define PBB_SCOP(PBB) (PBB->scop)
-#define PBB_DOMAIN(PBB) (PBB->domain)
+#define PBB_DOMAIN(PBB) (PBB->_domain)
 #define PBB_DRS(PBB) (PBB->drs)
-#define PBB_ORIGINAL(PBB) (PBB->original)
-#define PBB_ORIGINAL_SCATTERING(PBB) (PBB->original->scattering)
-#define PBB_TRANSFORMED(PBB) (PBB->transformed)
-#define PBB_TRANSFORMED_SCATTERING(PBB) (PBB->transformed->scattering)
-#define PBB_SAVED(PBB) (PBB->saved)
-#define PBB_NB_LOCAL_VARIABLES(PBB) (PBB->transformed->nb_local_variables)
-#define PBB_NB_SCATTERING_TRANSFORM(PBB) (PBB->transformed->nb_scattering)
+#define PBB_ORIGINAL(PBB) (PBB->_original)
+#define PBB_ORIGINAL_SCATTERING(PBB) (PBB_ORIGINAL (PBB)->scattering)
+#define PBB_TRANSFORMED(PBB) (PBB->_transformed)
+#define PBB_TRANSFORMED_SCATTERING(PBB) (PBB_TRANSFORMED (PBB)->scattering)
+#define PBB_SAVED(PBB) (PBB->_saved)
+#define PBB_NB_LOCAL_VARIABLES(PBB) (PBB_TRANSFORMED (PBB)->nb_local_variables)
+#define PBB_NB_SCATTERING_TRANSFORM(PBB) (PBB_TRANSFORMED (PBB)->nb_scattering)
 #define PBB_PDR_DUPLICATES_REMOVED(PBB) (PBB->pdr_duplicates_removed)
 #define PBB_IS_REDUCTION(PBB) (PBB->is_reduction)
 
@@ -1401,7 +1406,8 @@ struct scop
   -128 >= a >= 127
      0 >= b >= 65,535
      c = 2a + b  */
-  ppl_Pointset_Powerset_C_Polyhedron_t context;
+  ppl_Pointset_Powerset_C_Polyhedron_t _context;
+  isl_set *context;
 
   /* A hashtable of the data dependence relations for the original
      scattering.  */
@@ -1414,7 +1420,7 @@ struct scop
 
 #define SCOP_BBS(S) (S->bbs)
 #define SCOP_REGION(S) ((sese) S->region)
-#define SCOP_CONTEXT(S) (S->context)
+#define SCOP_CONTEXT(S) (S->_context)
 #define SCOP_ORIGINAL_PDDRS(S) (S->original_pddrs)
 #define SCOP_ORIGINAL_SCHEDULE(S) (S->original_schedule)
 #define SCOP_TRANSFORMED_SCHEDULE(S) (S->transformed_schedule)

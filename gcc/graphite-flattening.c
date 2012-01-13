@@ -1,5 +1,5 @@
 /* Loop flattening for Graphite.
-   Copyright (C) 2010 Free Software Foundation, Inc.
+   Copyright (C) 2010, 2011 Free Software Foundation, Inc.
    Contributed by Sebastian Pop <sebastian.pop@amd.com>.
 
 This file is part of GCC.
@@ -19,6 +19,15 @@ along with GCC; see the file COPYING3.  If not see
 <http://www.gnu.org/licenses/>.  */
 
 #include "config.h"
+
+#ifdef HAVE_cloog
+#include <isl/set.h>
+#include <isl/map.h>
+#include <isl/union_map.h>
+#include <cloog/cloog.h>
+#include <cloog/isl/domain.h>
+#endif
+
 #include "system.h"
 #include "coretypes.h"
 #include "tree-flow.h"
