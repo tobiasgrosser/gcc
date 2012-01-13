@@ -866,7 +866,7 @@ graphite_create_new_loop (edge entry_edge, struct clast_for *stmt,
 			  loop_p outer, tree type, tree lb, tree ub,
 			  int level, ivs_params_p ip)
 {
-  mpz_t low, up;
+  mpz_t low, up, gmp_one;
 
   struct clast_user_stmt *body
     = clast_get_body_of_loop ((struct clast_stmt *) stmt);
@@ -874,8 +874,17 @@ graphite_create_new_loop (edge entry_edge, struct clast_for *stmt,
 
   tree stride = gmp_cst_to_tree (type, stmt->stride);
   tree ivvar = create_tmp_var (type, "graphite_IV");
-  tree iv, iv_after_increment;
-  loop_p loop = create_empty_loop_on_edge
+  tree iv, iv_after_increment, one;
+  loop_p loop;
+
+  mpz_init (gmp_one);
+  mpz_set_si (gmp_one, 1);
+  one = gmp_cst_to_tree (type, gmp_one);
+  ub = fold_build2 (MINUS_EXPR, type, ub, stride);
+  ub = fold_build2 (PLUS_EXPR, type, ub, one);
+  mpz_clear (gmp_one);
+
+  loop = create_empty_loop_on_edge
     (entry_edge, lb, stride, ub, ivvar, &iv, &iv_after_increment,
      outer ? outer : entry_edge->src->loop_father);
 
