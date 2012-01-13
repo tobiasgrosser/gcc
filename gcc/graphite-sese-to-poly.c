@@ -24,6 +24,8 @@ along with GCC; see the file COPYING3.  If not see
 #include <isl/set.h>
 #include <isl/map.h>
 #include <isl/union_map.h>
+#include <isl/constraint.h>
+#include <isl/aff.h>
 #include <cloog/cloog.h>
 #include <cloog/cloog.h>
 #include <cloog/isl/domain.h>
@@ -595,6 +597,223 @@ build_scop_scattering (scop_p scop)
   ppl_delete_Linear_Expression (static_schedule);
 }
 
+static isl_pw_aff *extract_affine (scop_p, tree, __isl_take isl_space *space);
+
+/* Extract an affine expression from the chain of recurrence E.  */
+
+static isl_pw_aff *
+extract_affine_chrec (scop_p s, tree e, __isl_take isl_space *space)
+{
+  isl_pw_aff *lhs = extract_affine (s, CHREC_LEFT (e), isl_space_copy (space));
+  isl_pw_aff *rhs = extract_affine (s, CHREC_RIGHT (e), isl_space_copy (space));
+  isl_local_space *ls = isl_local_space_from_space (space);
+  unsigned pos = sese_loop_depth ((sese) s->region,
+				  get_loop (CHREC_VARIABLE (e))) - 1;
+  isl_aff *loop = isl_aff_set_coefficient_si
+    (isl_aff_zero_on_domain (ls), isl_dim_in, pos, 1);
+  isl_pw_aff *l = isl_pw_aff_from_aff (loop);
+
+  /* Before multiplying, make sure that the result is affine.  */
+  gcc_assert (isl_pw_aff_is_cst (rhs)
+	      || isl_pw_aff_is_cst (l));
+
+  return isl_pw_aff_add (lhs, isl_pw_aff_mul (rhs, l));
+}
+
+/* Extract an affine expression from the mult_expr E.  */
+
+static isl_pw_aff *
+extract_affine_mul (scop_p s, tree e, __isl_take isl_space *space)
+{
+  isl_pw_aff *lhs = extract_affine (s, TREE_OPERAND (e, 0),
+				    isl_space_copy (space));
+  isl_pw_aff *rhs = extract_affine (s, TREE_OPERAND (e, 1), space);
+
+  if (!isl_pw_aff_is_cst (lhs)
+      && !isl_pw_aff_is_cst (rhs))
+    {
+      isl_pw_aff_free (lhs);
+      isl_pw_aff_free (rhs);
+      return NULL;
+    }
+
+  return isl_pw_aff_mul (lhs, rhs);
+}
+
+/* Return an ISL identifier from the name of the ssa_name E.  */
+
+static isl_id *
+isl_id_for_ssa_name (scop_p s, tree e)
+{
+  const char *name = get_name (e);
+  isl_id *id;
+
+  if (name)
+    id = isl_id_alloc (s->ctx, name, e);
+  else
+    {
+      char name1[50];
+      snprintf (name1, sizeof (name1), "P_%d", SSA_NAME_VERSION (e));
+      id = isl_id_alloc (s->ctx, name1, e);
+    }
+
+  return id;
+}
+
+/* Return an ISL identifier from the loop L.  */
+
+static isl_id *
+isl_id_for_loop (scop_p s, loop_p l)
+{
+  isl_id *id;
+  char name[50];
+
+  snprintf (name, sizeof (name), "L_%d", l ? l->num : -1);
+  id = isl_id_alloc (s->ctx, name, l);
+
+  return id;
+}
+
+/* Extract an affine expression from the ssa_name E.  */
+
+static isl_pw_aff *
+extract_affine_name (scop_p s, tree e, __isl_take isl_space *space)
+{
+  isl_aff *aff;
+  isl_set *dom;
+  isl_id *id;
+  int dimension;
+
+  id = isl_id_for_ssa_name (s, e);
+  dimension = isl_space_find_dim_by_id (space, isl_dim_param, id);
+  isl_id_free(id);
+  dom = isl_set_universe (isl_space_copy (space));
+  aff = isl_aff_zero_on_domain (isl_local_space_from_space (space));
+  aff = isl_aff_add_coefficient_si (aff, isl_dim_param, dimension, 1);
+  return isl_pw_aff_alloc (dom, aff);
+}
+
+/* Extract an affine expression from the gmp constant G.  */
+
+static isl_pw_aff *
+extract_affine_gmp (mpz_t g, __isl_take isl_space *space)
+{
+  isl_local_space *ls = isl_local_space_from_space (isl_space_copy (space));
+  isl_aff *aff = isl_aff_zero_on_domain (ls);
+  isl_set *dom = isl_set_universe (space);
+  isl_int v;
+
+  isl_int_init (v);
+  isl_int_set_gmp (v, g);
+  aff = isl_aff_add_constant (aff, v);
+  isl_int_clear (v);
+
+  return isl_pw_aff_alloc (dom, aff);
+}
+
+/* Extract an affine expression from the integer_cst E.  */
+
+static isl_pw_aff *
+extract_affine_int (tree e, __isl_take isl_space *space)
+{
+  isl_pw_aff *res;
+  mpz_t g;
+
+  mpz_init (g);
+  tree_int_to_gmp (e, g);
+  res = extract_affine_gmp (g, space);
+  mpz_clear (g);
+
+  return res;
+}
+
+/* Compute pwaff mod 2^width.  */
+
+static isl_pw_aff *
+wrap (isl_pw_aff *pwaff, unsigned width)
+{
+  isl_int mod;
+
+  isl_int_init (mod);
+  isl_int_set_si (mod, 1);
+  isl_int_mul_2exp (mod, mod, width);
+
+  pwaff = isl_pw_aff_mod (pwaff, mod);
+
+  isl_int_clear (mod);
+
+  return pwaff;
+}
+
+/* Extract an affine expression from the tree E in the scop S.  */
+
+static isl_pw_aff *
+extract_affine (scop_p s, tree e, __isl_take isl_space *space)
+{
+  isl_pw_aff *lhs, *rhs, *res;
+  tree type;
+
+  if (e == chrec_dont_know) {
+    isl_space_free (space);
+    return NULL;
+  }
+
+  switch (TREE_CODE (e))
+    {
+    case POLYNOMIAL_CHREC:
+      res = extract_affine_chrec (s, e, space);
+      break;
+
+    case MULT_EXPR:
+      res = extract_affine_mul (s, e, space);
+      break;
+
+    case PLUS_EXPR:
+    case POINTER_PLUS_EXPR:
+      lhs = extract_affine (s, TREE_OPERAND (e, 0), isl_space_copy (space));
+      rhs = extract_affine (s, TREE_OPERAND (e, 1), space);
+      res = isl_pw_aff_add (lhs, rhs);
+      break;
+
+    case MINUS_EXPR:
+      lhs = extract_affine (s, TREE_OPERAND (e, 0), isl_space_copy (space));
+      rhs = extract_affine (s, TREE_OPERAND (e, 1), space);
+      res = isl_pw_aff_sub (lhs, rhs);
+      break;
+
+    case NEGATE_EXPR:
+    case BIT_NOT_EXPR:
+      lhs = extract_affine (s, TREE_OPERAND (e, 0), isl_space_copy (space));
+      rhs = extract_affine (s, integer_minus_one_node, space);
+      res = isl_pw_aff_mul (lhs, rhs);
+      break;
+
+    case SSA_NAME:
+      res = extract_affine_name (s, e, space);
+      break;
+
+    case INTEGER_CST:
+      res = extract_affine_int (e, space);
+      /* No need to wrap a single integer.  */
+      return res;
+
+    CASE_CONVERT:
+    case NON_LVALUE_EXPR:
+      res = extract_affine (s, TREE_OPERAND (e, 0), space);
+      break;
+
+    default:
+      gcc_unreachable ();
+      break;
+    }
+
+  type = TREE_TYPE (e);
+  if (TYPE_UNSIGNED (type))
+    res = wrap (res, TYPE_PRECISION (type));
+
+  return res;
+}
+
 /* Add the value K to the dimension D of the linear expression EXPR.  */
 
 static void
@@ -931,6 +1150,7 @@ find_scop_parameters (scop_p scop)
   sese region = SCOP_REGION (scop);
   struct loop *loop;
   mpz_t one;
+  int nbp;
 
   mpz_init (one);
   mpz_set_si (one, 1);
@@ -953,11 +1173,27 @@ find_scop_parameters (scop_p scop)
   FOR_EACH_VEC_ELT (poly_bb_p, SCOP_BBS (scop), i, pbb)
     find_params_in_bb (region, PBB_BLACK_BOX (pbb));
 
-  scop_set_nb_params (scop, sese_nb_params (region));
+  nbp = sese_nb_params (region);
+  scop_set_nb_params (scop, nbp);
   SESE_ADD_PARAMS (region) = false;
 
   ppl_new_Pointset_Powerset_C_Polyhedron_from_space_dimension
-    (&SCOP_CONTEXT (scop), scop_nb_params (scop), 0);
+    (&SCOP_CONTEXT (scop), nbp, 0);
+
+  {
+    tree e;
+    isl_space *space = isl_space_set_alloc (scop->ctx, nbp, 0);
+
+    FOR_EACH_VEC_ELT (tree, SESE_PARAMS (region), i, e)
+      space = isl_space_set_dim_id (space, isl_dim_param, i,
+				    isl_id_for_ssa_name (scop, e));
+
+    for (i = 0; i < nbl; i++)
+      space = isl_space_set_dim_id (space, isl_dim_set, i,
+				    isl_id_for_loop (scop, get_loop (i)));
+
+    scop->context = isl_set_universe (space);
+  }
 }
 
 /* Insert in the SCOP context constraints from the estimation of the
@@ -1094,6 +1330,7 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
       ppl_Constraint_t ub;
       ppl_Linear_Expression_t ub_expr;
       double_int nit;
+      isl_pw_aff *aff;
 
       mpz_init (one);
       mpz_set_si (one, 1);
@@ -1102,8 +1339,33 @@ build_loop_iteration_domains (scop_p scop, struct loop *loop,
       scan_tree_for_params (SCOP_REGION (scop), nb_iters, ub_expr, one);
       mpz_clear (one);
 
+      aff = extract_affine (scop, nb_iters);
+      scop->context = isl_set_intersect
+	(scop->context, isl_pw_aff_nonneg_set (isl_pw_aff_copy (aff)));
+
       if (max_stmt_executions (loop, true, &nit))
-	add_upper_bounds_from_estimated_nit (scop, nit, dim, ub_expr);
+	{
+	  add_upper_bounds_from_estimated_nit (scop, nit, dim, ub_expr);
+
+	  {
+	    /* Insert in the context the constraints from the
+	       estimation of the number of iterations NIT and the
+	       symbolic number of iterations (involving parameter
+	       names) NB_ITERS.  First, build the affine expression
+	       "NIT - NB_ITERS" and then say that it is positive,
+	       i.e., NIT approximates NB_ITERS: "NIT >= NB_ITERS".  */
+	    isl_pw_aff *approx;
+	    mpz_t g;
+	    isl_set *x;
+
+	    mpz_init (g);
+	    mpz_set_double_int (g, nit, false);
+	    approx = extract_affine_gmp (scop, g);
+	    mpz_clear (g);
+	    x = isl_pw_aff_ge_set (approx, aff);
+	    scop->context = isl_set_intersect (scop->context, x);
+	  }
+	}
 
       /* loop_i <= expr_nb_iters */
       ppl_set_coef (ub_expr, nb, -1);
@@ -1463,6 +1725,26 @@ add_param_constraints (scop_p scop, ppl_Polyhedron_t context, graphite_dim_t p)
       ppl_Polyhedron_add_constraint (context, cstr);
       ppl_delete_Linear_Expression (le);
       ppl_delete_Constraint (cstr);
+
+      {
+	isl_space *space = isl_set_get_space (scop->context);
+	isl_constraint *c;
+	mpz_t g;
+	isl_int v;
+
+	c = isl_inequality_alloc (isl_local_space_from_space (space));
+	mpz_init (g);
+	isl_int_init (v);
+	tree_int_to_gmp (lb, g);
+	isl_int_set_gmp (v, g);
+	isl_int_neg (v, v);
+	mpz_clear (g);
+	c = isl_constraint_set_constant (c, v);
+	isl_int_clear (v);
+	c = isl_constraint_set_coefficient_si (c, isl_dim_param, p, 1);
+
+	scop->context = isl_set_add_constraint (scop->context, c);
+      }
     }
 
   if (ub)
@@ -1474,6 +1756,26 @@ add_param_constraints (scop_p scop, ppl_Polyhedron_t context, graphite_dim_t p)
       ppl_Polyhedron_add_constraint (context, cstr);
       ppl_delete_Linear_Expression (le);
       ppl_delete_Constraint (cstr);
+
+      {
+	isl_space *space = isl_set_get_space (scop->context);
+	isl_constraint *c;
+	mpz_t g;
+	isl_int v;
+
+	c = isl_inequality_alloc (isl_local_space_from_space (space));
+
+	mpz_init (g);
+	isl_int_init (v);
+	tree_int_to_gmp (ub, g);
+	isl_int_set_gmp (v, g);
+	mpz_clear (g);
+	c = isl_constraint_set_constant (c, v);
+	isl_int_clear (v);
+	c = isl_constraint_set_coefficient_si (c, isl_dim_param, p, -1);
+
+	scop->context = isl_set_add_constraint (scop->context, c);
+      }
     }
 }
 

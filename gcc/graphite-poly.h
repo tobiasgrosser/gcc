@@ -1409,6 +1409,9 @@ struct scop
   ppl_Pointset_Powerset_C_Polyhedron_t _context;
   isl_set *context;
 
+  /* The context used internally by ISL.  */
+  isl_ctx *ctx;
+
   /* A hashtable of the data dependence relations for the original
      scattering.  */
   htab_t original_pddrs;

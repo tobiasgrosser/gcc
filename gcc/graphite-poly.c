@@ -1012,6 +1012,7 @@ new_scop (void *region)
   scop_p scop = XNEW (struct scop);
 
   SCOP_CONTEXT (scop) = NULL;
+  scop->context = NULL;
   scop_set_region (scop, region);
   SCOP_BBS (scop) = VEC_alloc (poly_bb_p, heap, 3);
   SCOP_ORIGINAL_PDDRS (scop) = htab_create (10, hash_poly_ddr_p,
@@ -1040,6 +1041,7 @@ free_scop (scop_p scop)
   if (SCOP_CONTEXT (scop))
     ppl_delete_Pointset_Powerset_C_Polyhedron (SCOP_CONTEXT (scop));
 
+  isl_set_free (scop->context);
   htab_delete (SCOP_ORIGINAL_PDDRS (scop));
   free_lst (SCOP_ORIGINAL_SCHEDULE (scop));
   free_lst (SCOP_TRANSFORMED_SCHEDULE (scop));
@@ -1400,6 +1402,12 @@ print_scop_context (FILE *file, scop_p scop, int verbosity)
     ppl_print_powerset_matrix (file, SCOP_CONTEXT (scop));
   else
     fprintf (file, "0 %d\n", (int) scop_nb_params (scop) + 2);
+
+  if (scop->context)
+    {
+      isl_printer *p = isl_printer_to_file (scop->ctx, file);
+      isl_printer_print_set (p, scop->context);
+    }
 
   if (verbosity > 0)
     fprintf (file, "# )\n");

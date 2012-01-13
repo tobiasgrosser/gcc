@@ -24,6 +24,11 @@ along with GCC; see the file COPYING3.  If not see
 #include <isl/set.h>
 #include <isl/map.h>
 #include <isl/union_map.h>
+#include <isl/list.h>
+#include <isl/constraint.h>
+#include <isl/div.h>
+#include <isl/ilp.h>
+#include <isl/aff.h>
 #include <cloog/cloog.h>
 #include <cloog/isl/domain.h>
 #endif
@@ -786,16 +791,19 @@ graphite_create_new_guard (edge entry_edge, struct clast_guard *stmt,
 static void
 compute_bounds_for_param (scop_p scop, int param, mpz_t low, mpz_t up)
 {
-  ppl_Linear_Expression_t le;
+  isl_int v;
+  isl_aff *aff = isl_aff_zero_on_domain
+    (isl_local_space_from_space (isl_set_get_space (scop->context)));
 
-  /* Prepare the linear expression corresponding to the parameter that
-     we want to maximize/minimize.  */
-  ppl_new_Linear_Expression_with_dimension (&le, scop_nb_params (scop));
-  ppl_set_coef (le, param, 1);
+  aff = isl_aff_add_coefficient_si (aff, isl_dim_param, param, 1);
 
-  ppl_max_for_le_pointset (SCOP_CONTEXT (scop), le, up);
-  ppl_min_for_le_pointset (SCOP_CONTEXT (scop), le, low);
-  ppl_delete_Linear_Expression (le);
+  isl_int_init (v);
+  isl_set_min (scop->context, aff, &v);
+  isl_int_get_gmp (v, low);
+  isl_set_max (scop->context, aff, &v);
+  isl_int_get_gmp (v, up);
+  isl_int_clear (v);
+  isl_aff_free (aff);
 }
 
 /* Compute the lower bound LOW and upper bound UP for the induction
@@ -1384,7 +1392,6 @@ build_cloog_union_domain (scop_p scop)
 {
   int i;
   poly_bb_p pbb;
-
   CloogUnionDomain *union_domain =
     cloog_union_domain_alloc (scop_nb_params (scop));
 
@@ -1487,8 +1494,30 @@ generate_cloog_input (scop_p scop, htab_t params_index)
   union_domain = add_names_to_union_domain (scop, union_domain,
 					    nb_scattering_dims,
 					    params_index);
-  context = new_Cloog_Domain_from_ppl_Pointset_Powerset
-    (SCOP_CONTEXT (scop), scop_nb_params (scop), cloog_state);
+
+  if (1)
+    {
+      /* For now remove the isl_id's from the context before
+	 translating to CLooG: this code will be removed when the
+	 domain will also contain isl_id's.  */
+      isl_set *ct = isl_set_project_out (isl_set_copy (scop->context),
+					 isl_dim_set, 0, number_of_loops ());
+      isl_printer *p = isl_printer_to_str (scop->ctx);
+      char *str;
+
+      p = isl_printer_set_output_format (p, ISL_FORMAT_EXT_POLYLIB);
+      p = isl_printer_print_set (p, ct);
+      isl_set_free (ct);
+
+      str = isl_printer_get_str (p);
+      ct = isl_set_read_from_str (scop->ctx, str);
+
+      free (str);
+      isl_printer_free (p);
+      context = cloog_domain_from_isl_set (ct);
+    }
+  else
+    context = cloog_domain_from_isl_set (isl_set_copy (scop->context));
 
   cloog_input = cloog_input_alloc (context, union_domain);
 
