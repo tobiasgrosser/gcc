@@ -56,6 +56,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree-scalar-evolution.h"
 #include "sese.h"
 #include "dbgcnt.h"
+#include "tree-vectorizer.h"
 
 #ifdef HAVE_cloog
 
@@ -263,7 +264,14 @@ graphite_transform_loops (void)
   bool need_cfg_cleanup_p = false;
   VEC (scop_p, heap) *scops = NULL;
   htab_t bb_pbb_mapping;
-  isl_ctx *ctx = isl_ctx_alloc ();
+  isl_ctx *ctx;
+
+  /* If a function is parallel it was most probably already run through graphite
+     once. No need to run again.  */
+  if (parallelized_function_p (cfun->decl))
+    return;
+
+  ctx = isl_ctx_alloc ();
   isl_options_set_on_error(ctx, ISL_ON_ERROR_ABORT);
 
   if (!graphite_initialize (ctx))

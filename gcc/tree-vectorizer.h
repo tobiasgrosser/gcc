@@ -938,4 +938,7 @@ unsigned vectorize_loops (void);
 /* Vectorization debug information */
 extern bool vect_print_dump_info (enum vect_verbosity_levels);
 
+bool parallelized_function_p (tree fn);
+
+
 #endif  /* GCC_TREE_VECTORIZER_H  */
