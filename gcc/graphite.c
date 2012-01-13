@@ -38,6 +38,7 @@ along with GCC; see the file COPYING3.  If not see
 #ifdef HAVE_cloog
 #include <isl/set.h>
 #include <isl/map.h>
+#include <isl/options.h>
 #include <isl/union_map.h>
 #include <cloog/cloog.h>
 #include <cloog/isl/domain.h>
@@ -263,6 +264,7 @@ graphite_transform_loops (void)
   VEC (scop_p, heap) *scops = NULL;
   htab_t bb_pbb_mapping;
   isl_ctx *ctx = isl_ctx_alloc ();
+  isl_options_set_on_error(ctx, ISL_ON_ERROR_ABORT);
 
   if (!graphite_initialize (ctx))
     return;
