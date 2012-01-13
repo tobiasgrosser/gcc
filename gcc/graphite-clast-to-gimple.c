@@ -51,7 +51,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "graphite-ppl.h"
 #include "graphite-poly.h"
 #include "graphite-clast-to-gimple.h"
-#include "graphite-dependences.h"
 
 typedef const struct clast_expr *clast_name_p;
 
@@ -1009,7 +1008,7 @@ mark_bb_with_pbb (poly_bb_p pbb, basic_block bb, htab_t bb_pbb_mapping)
 
 /* Find BB's related poly_bb_p in hash table BB_PBB_MAPPING.  */
 
-static poly_bb_p
+poly_bb_p
 find_pbb_via_hash (htab_t bb_pbb_mapping, basic_block bb)
 {
   bb_pbb_def tmp;
@@ -1024,41 +1023,32 @@ find_pbb_via_hash (htab_t bb_pbb_mapping, basic_block bb)
   return NULL;
 }
 
-/* Check data dependency in LOOP at level LEVEL.
-   BB_PBB_MAPPING is a basic_block and it's related poly_bb_p
-   mapping.  */
+/* Return the scop of the loop and initialize PBBS the set of
+   poly_bb_p that belong to the LOOP.  BB_PBB_MAPPING is a map created
+   by the CLAST code generator between a generated basic_block and its
+   related poly_bb_p.  */
 
-static bool
-dependency_in_loop_p (loop_p loop, htab_t bb_pbb_mapping, int level)
+scop_p
+get_loop_body_pbbs (loop_p loop, htab_t bb_pbb_mapping,
+		    VEC (poly_bb_p, heap) **pbbs)
 {
-  unsigned i,j;
+  unsigned i;
   basic_block *bbs = get_loop_body_in_dom_order (loop);
+  scop_p scop = NULL;
 
   for (i = 0; i < loop->num_nodes; i++)
     {
-      poly_bb_p pbb1 = find_pbb_via_hash (bb_pbb_mapping, bbs[i]);
+      poly_bb_p pbb = find_pbb_via_hash (bb_pbb_mapping, bbs[i]);
 
-      if (pbb1 == NULL)
-       continue;
+      if (pbb == NULL)
+	continue;
 
-      for (j = 0; j < loop->num_nodes; j++)
-       {
-	 poly_bb_p pbb2 = find_pbb_via_hash (bb_pbb_mapping, bbs[j]);
-
-	 if (pbb2 == NULL)
-	   continue;
-
-	 if (dependency_between_pbbs_p (pbb1, pbb2, level))
-	   {
-	     free (bbs);
-	     return true;
-	   }
-       }
+      scop = PBB_SCOP (pbb);
+      VEC_safe_push (poly_bb_p, heap, *pbbs, pbb);
     }
 
   free (bbs);
-
-  return false;
+  return scop;
 }
 
 /* Translates a clast user statement STMT to gimple.
@@ -1165,7 +1155,7 @@ translate_clast_for_loop (loop_p context_loop, struct clast_for *stmt,
   set_immediate_dominator (CDI_DOMINATORS, next_e->dest, next_e->src);
 
   if (flag_loop_parallelize_all
-      && !dependency_in_loop_p (loop, bb_pbb_mapping, level))
+      && loop_is_parallel_p (loop, bb_pbb_mapping, level))
     loop->can_be_parallel = true;
 
   return last_e;

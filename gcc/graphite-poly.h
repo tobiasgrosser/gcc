@@ -374,9 +374,6 @@ struct poly_bb
   poly_scattering_p _saved;
   isl_map *saved;
 
-  /* True when the PDR duplicates have already been removed.  */
-  bool pdr_duplicates_removed;
-
   /* True when this PBB contains only a reduction statement.  */
   bool is_reduction;
 };
@@ -392,7 +389,6 @@ struct poly_bb
 #define PBB_SAVED(PBB) (PBB->_saved)
 #define PBB_NB_LOCAL_VARIABLES(PBB) (PBB_TRANSFORMED (PBB)->nb_local_variables)
 #define PBB_NB_SCATTERING_TRANSFORM(PBB) (PBB_TRANSFORMED (PBB)->nb_scattering)
-#define PBB_PDR_DUPLICATES_REMOVED(PBB) (PBB->pdr_duplicates_removed)
 #define PBB_IS_REDUCTION(PBB) (PBB->is_reduction)
 
 extern poly_bb_p new_poly_bb (scop_p, void *);
@@ -422,7 +418,6 @@ extern int scop_do_strip_mine (scop_p, int);
 extern bool scop_do_block (scop_p);
 extern bool flatten_all_loops (scop_p);
 extern void pbb_number_of_iterations_at_time (poly_bb_p, graphite_dim_t, mpz_t);
-extern void pbb_remove_duplicate_pdrs (poly_bb_p);
 
 /* Return the number of write data references in PBB.  */
 
@@ -1436,6 +1431,14 @@ struct scop
   /* The context used internally by ISL.  */
   isl_ctx *ctx;
 
+  /* The original dependence relations:
+     RAW are read after write dependences,
+     WAR are write after read dependences,
+     WAW are write after write dependences.  */
+  isl_union_map *must_raw, *may_raw, *must_raw_no_source, *may_raw_no_source,
+    *must_war, *may_war, *must_war_no_source, *may_war_no_source,
+    *must_waw, *may_waw, *must_waw_no_source, *may_waw_no_source;
+
   /* A hashtable of the data dependence relations for the original
      scattering.  */
   htab_t original_pddrs;
@@ -1652,5 +1655,13 @@ combine_context_id_scat (ppl_Pointset_Powerset_C_Polyhedron_t *res,
   ppl_delete_Pointset_Powerset_C_Polyhedron (context);
   ppl_delete_Pointset_Powerset_C_Polyhedron (id);
 }
+
+bool graphite_legal_transform (scop_p);
+poly_bb_p find_pbb_via_hash (htab_t, basic_block);
+bool loop_is_parallel_p (loop_p, htab_t, int);
+scop_p get_loop_body_pbbs (loop_p, htab_t, VEC (poly_bb_p, heap) **);
+isl_map *reverse_loop_at_level (poly_bb_p, int);
+isl_union_map *reverse_loop_for_pbbs (scop_p, VEC (poly_bb_p, heap) *, int);
+__isl_give isl_union_map *extend_schedule (__isl_take isl_union_map *);
 
 #endif

@@ -25,6 +25,7 @@ along with GCC; see the file COPYING3.  If not see
 #include <isl/set.h>
 #include <isl/map.h>
 #include <isl/union_map.h>
+#include <isl/constraint.h>
 #include <cloog/cloog.h>
 #include <cloog/isl/domain.h>
 #endif
@@ -45,7 +46,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "ppl_c.h"
 #include "graphite-ppl.h"
 #include "graphite-poly.h"
-#include "graphite-dependences.h"
 #include "graphite-cloog-util.h"
 
 #define OPENSCOP_MAX_STRING 256
@@ -795,51 +795,6 @@ apply_poly_transforms (scop_p scop)
   return transform_done;
 }
 
-/* Returns true when it PDR1 is a duplicate of PDR2: same PBB, and
-   their ACCESSES, TYPE, and NB_SUBSCRIPTS are the same.  */
-
-static inline bool
-can_collapse_pdrs (poly_dr_p pdr1, poly_dr_p pdr2)
-{
-  bool res;
-  ppl_Pointset_Powerset_C_Polyhedron_t af1, af2, diff;
-
-  if (PDR_PBB (pdr1) != PDR_PBB (pdr2)
-      || PDR_NB_SUBSCRIPTS (pdr1) != PDR_NB_SUBSCRIPTS (pdr2)
-      || PDR_TYPE (pdr1) != PDR_TYPE (pdr2))
-    return false;
-
-  af1 = PDR_ACCESSES (pdr1);
-  af2 = PDR_ACCESSES (pdr2);
-  ppl_new_Pointset_Powerset_C_Polyhedron_from_Pointset_Powerset_C_Polyhedron
-    (&diff, af1);
-  ppl_Pointset_Powerset_C_Polyhedron_difference_assign (diff, af2);
-
-  res = ppl_Pointset_Powerset_C_Polyhedron_is_empty (diff);
-  ppl_delete_Pointset_Powerset_C_Polyhedron (diff);
-  return res;
-}
-
-/* Removes duplicated data references in PBB.  */
-
-void
-pbb_remove_duplicate_pdrs (poly_bb_p pbb)
-{
-  int i, j;
-  poly_dr_p pdr1, pdr2;
-
-  FOR_EACH_VEC_ELT (poly_dr_p, PBB_DRS (pbb), i, pdr1)
-    for (j = i + 1; VEC_iterate (poly_dr_p, PBB_DRS (pbb), j, pdr2); j++)
-      if (can_collapse_pdrs (pdr1, pdr2))
-	{
-	  PDR_NB_REFS (pdr1) += PDR_NB_REFS (pdr2);
-	  free_poly_dr (pdr2);
-	  VEC_ordered_remove (poly_dr_p, PBB_DRS (pbb), j);
-	}
-
-  PBB_PDR_DUPLICATES_REMOVED (pbb) = true;
-}
-
 /* Create a new polyhedral data reference and add it to PBB.  It is
    defined by its ACCESSES, its TYPE, and the number of subscripts
    NB_SUBSCRIPTS.  */
@@ -896,7 +851,6 @@ new_poly_bb (scop_p scop, void *black_box)
   PBB_ORIGINAL (pbb) = NULL;
   PBB_DRS (pbb) = VEC_alloc (poly_dr_p, heap, 3);
   PBB_IS_REDUCTION (pbb) = false;
-  PBB_PDR_DUPLICATES_REMOVED (pbb) = false;
   GBB_PBB ((gimple_bb_p) black_box) = pbb;
 
   return pbb;
@@ -1028,10 +982,20 @@ new_scop (void *region)
 
   SCOP_CONTEXT (scop) = NULL;
   scop->context = NULL;
+  scop->must_raw = NULL;
+  scop->may_raw = NULL;
+  scop->must_raw_no_source = NULL;
+  scop->may_raw_no_source = NULL;
+  scop->must_war = NULL;
+  scop->may_war = NULL;
+  scop->must_war_no_source = NULL;
+  scop->may_war_no_source = NULL;
+  scop->must_waw = NULL;
+  scop->may_waw = NULL;
+  scop->must_waw_no_source = NULL;
+  scop->may_waw_no_source = NULL;
   scop_set_region (scop, region);
   SCOP_BBS (scop) = VEC_alloc (poly_bb_p, heap, 3);
-  SCOP_ORIGINAL_PDDRS (scop) = htab_create (10, hash_poly_ddr_p,
-					    eq_poly_ddr_p, free_poly_ddr);
   SCOP_ORIGINAL_SCHEDULE (scop) = NULL;
   SCOP_TRANSFORMED_SCHEDULE (scop) = NULL;
   SCOP_SAVED_SCHEDULE (scop) = NULL;
@@ -1057,7 +1021,18 @@ free_scop (scop_p scop)
     ppl_delete_Pointset_Powerset_C_Polyhedron (SCOP_CONTEXT (scop));
 
   isl_set_free (scop->context);
-  htab_delete (SCOP_ORIGINAL_PDDRS (scop));
+  isl_union_map_free (scop->must_raw);
+  isl_union_map_free (scop->may_raw);
+  isl_union_map_free (scop->must_raw_no_source);
+  isl_union_map_free (scop->may_raw_no_source);
+  isl_union_map_free (scop->must_war);
+  isl_union_map_free (scop->may_war);
+  isl_union_map_free (scop->must_war_no_source);
+  isl_union_map_free (scop->may_war_no_source);
+  isl_union_map_free (scop->must_waw);
+  isl_union_map_free (scop->may_waw);
+  isl_union_map_free (scop->must_waw_no_source);
+  isl_union_map_free (scop->may_waw_no_source);
   free_lst (SCOP_ORIGINAL_SCHEDULE (scop));
   free_lst (SCOP_TRANSFORMED_SCHEDULE (scop));
   free_lst (SCOP_SAVED_SCHEDULE (scop));
@@ -1968,6 +1943,46 @@ cloog_checksum (scop_p scop ATTRIBUTE_UNUSED)
   system ("cloog -compilable 1 /tmp/scop.cloog > /tmp/scop.c ; gcc -O0 -g /tmp/scop.c -lm -o /tmp/scop; /tmp/scop | md5sum ");
 #endif
 }
+
+/* Reverse the loop around PBB at level DEPTH.  */
+
+isl_map *
+reverse_loop_at_level (poly_bb_p pbb, int depth)
+{
+  unsigned i, depth_dim = psct_dynamic_dim (pbb, depth);
+  isl_space *d = isl_map_get_space (pbb->transformed);
+  isl_space *d1 = isl_space_range (d);
+  unsigned n = isl_space_dim (d1, isl_dim_out);
+  isl_space *d2 = isl_space_add_dims (d1, isl_dim_in, n);
+  isl_map *x = isl_map_universe (isl_space_copy (d2));
+  isl_constraint *c = isl_equality_alloc (isl_local_space_from_space (d2));
+
+  for (i = 0; i < n; i++)
+    if (i != depth_dim)
+      x = isl_map_equate (x, isl_dim_in, i, isl_dim_out, i);
+
+  c = isl_constraint_set_coefficient_si (c, isl_dim_in, depth_dim, 1);
+  c = isl_constraint_set_coefficient_si (c, isl_dim_out, depth_dim, 1);
+  x = isl_map_add_constraint (x, c);
+  return x;
+}
+
+/* Reverse the loop at level DEPTH for all the PBBS.  */
+
+isl_union_map *
+reverse_loop_for_pbbs (scop_p scop, VEC (poly_bb_p, heap) *pbbs, int depth)
+{
+  poly_bb_p pbb;
+  int i;
+  isl_space *space = isl_space_from_domain (isl_set_get_space (scop->context));
+  isl_union_map *res = isl_union_map_empty (space);
+
+  for (i = 0; VEC_iterate (poly_bb_p, pbbs, i, pbb); i++)
+    res = isl_union_map_add_map (res, reverse_loop_at_level (pbb, depth));
+
+  return res;
+}
+
 
 #endif
 
