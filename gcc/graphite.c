@@ -41,6 +41,7 @@ along with GCC; see the file COPYING3.  If not see
 #include <isl/union_map.h>
 #include <cloog/cloog.h>
 #include <cloog/isl/domain.h>
+#include <cloog/isl/cloog.h>
 #endif
 
 #include "system.h"
@@ -196,7 +197,7 @@ print_graphite_statistics (FILE* file, VEC (scop_p, heap) *scops)
 /* Initialize graphite: when there are no loops returns false.  */
 
 static bool
-graphite_initialize (void)
+graphite_initialize (isl_ctx *ctx)
 {
   int ppl_initialized;
 
@@ -208,6 +209,7 @@ graphite_initialize (void)
       if (dump_file && (dump_flags & TDF_DETAILS))
 	print_global_statistics (dump_file);
 
+      isl_ctx_free (ctx);
       return false;
     }
 
@@ -218,7 +220,7 @@ graphite_initialize (void)
   ppl_initialized = ppl_initialize ();
   gcc_assert (ppl_initialized == 0);
 
-  cloog_state = cloog_state_malloc ();
+  cloog_state = cloog_isl_state_malloc (ctx);
 
   if (dump_file && dump_flags)
     dump_function_to_file (current_function_decl, dump_file, dump_flags);
@@ -260,8 +262,9 @@ graphite_transform_loops (void)
   bool need_cfg_cleanup_p = false;
   VEC (scop_p, heap) *scops = NULL;
   htab_t bb_pbb_mapping;
+  isl_ctx *ctx = isl_ctx_alloc ();
 
-  if (!graphite_initialize ())
+  if (!graphite_initialize (ctx))
     return;
 
   build_scops (&scops);
@@ -277,6 +280,7 @@ graphite_transform_loops (void)
   FOR_EACH_VEC_ELT (scop_p, scops, i, scop)
     if (dbg_cnt (graphite_scop))
       {
+	scop->ctx = ctx;
 	build_poly_scop (scop);
 
 	if (POLY_SCOP_P (scop)
@@ -288,6 +292,7 @@ graphite_transform_loops (void)
   htab_delete (bb_pbb_mapping);
   free_scops (scops);
   graphite_finalize (need_cfg_cleanup_p);
+  isl_ctx_free (ctx);
 }
 
 #else /* If Cloog is not available: #ifndef HAVE_cloog.  */
