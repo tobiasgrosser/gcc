@@ -1336,13 +1336,13 @@ init_optimization_passes (void)
       NEXT_PASS (pass_cse_sincos);
       NEXT_PASS (pass_optimize_bswap);
       NEXT_PASS (pass_split_crit_edges);
-      NEXT_PASS (pass_pre);
+      /* NEXT_PASS (pass_pre); */
       NEXT_PASS (pass_sink_code);
       NEXT_PASS (pass_tree_loop);
 	{
 	  struct opt_pass **p = &pass_tree_loop.pass.sub;
 	  NEXT_PASS (pass_tree_loop_init);
-	  NEXT_PASS (pass_lim);
+	  /* NEXT_PASS (pass_lim); */
 	  NEXT_PASS (pass_copy_prop);
 	  NEXT_PASS (pass_dce_loop);
 	  NEXT_PASS (pass_tree_unswitch);
